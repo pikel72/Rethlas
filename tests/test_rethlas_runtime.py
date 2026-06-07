@@ -21,7 +21,9 @@ def test_problem_normalization_short_id():
 
 def test_runtime_config_has_multi_model_profiles(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-opus-4-5")
     config = load_config()
     # toml-only profiles: codex + mock
     assert config.models["mock-verification-correct"].provider == "mock"
@@ -32,9 +34,11 @@ def test_runtime_config_has_multi_model_profiles(monkeypatch):
     openai = config.resolve_model("openai")
     assert openai.provider == "litellm"
     assert openai.compat == "openai"
+    assert openai.model == "gpt-5"
     claude = config.resolve_model("claude")
     assert claude.provider == "litellm"
     assert claude.compat == "anthropic"
+    assert claude.model == "claude-opus-4-5"
 
 
 def test_verification_json_validation():

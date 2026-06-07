@@ -382,3 +382,40 @@ test_verify_model_env_independent_from_generation
 - 如果某个预设的 base_url 默认值写错（特别是 `MiniMax` / `mimo` 这种本项目没集成过的厂商），用户在 `.env` 设 `*_API_BASE` 即可覆盖，**不需要改代码**。
 - 删 toml 段是破坏性变更（`[models.openai-default]` 等名字消失）。但因为这些名字在 6 月 7 日这一天才合并（commit `529d806`），还没有 release，回滚成本低。`codex-fast` / `codex-deep` 仍保留在 toml，所以"--model codex-fast"和今天一样工作。
 
+---
+
+## 修订记录
+
+### 2026-06-07 (同日): 移除 `default_model` 字段，重命名 `deepseek-1` → `deepseek`
+
+**用户反馈**：厂商下面的模型名（如 `deepseek-chat`）写死在 `BUILTIN_PRESETS` 里是糟糕的设计 —— 厂商一改旗舰模型用户就只能等 Python 源码更新。我用 `qwen3.7max`，等他更新了我上哪去改？
+
+**变更**：
+
+1. **`PresetSpec.default_model` 字段删除**。`BUILTIN_PRESETS` 不再携带任何"默认模型名"信息，只携带厂商元数据（`base_url` / `compat` / `key_env` / `model_env_override` / `key_optional` / `base_url_env_override`）。
+2. **真实模型名 100% 由 `.env` 驱动**。`_resolve_env_preset` 检查 `os.getenv(preset.model_env_override)`，**未设置则抛清晰错误**：
+   ```
+   Preset 'deepseek' requires DEEPSEEK_MODEL to be set in .env.
+   See .env.example for the current recommended model names.
+   ```
+3. **`.env.example` 是真实模型名的唯一权威来源**。每个预设下挂完整参考卡：官网、文档、key 申请地址、当前推荐模型清单（带 reasoning / context window 等备注）、覆盖方式。`BUILTIN_PRESETS` 永不携带这些 —— 它们是"推荐"而不是"默认"。
+4. **`deepseek-1` → `deepseek`**，对应 `model_env_override` 由 `DEEPSEEK_1_MODEL` 改为 `DEEPSEEK_MODEL`。其他 13 个预设命名不变（都是纯厂商名）。
+5. **`default_model` 在 README 预设表中也删除**该列；改为指向 `.env.example`。
+
+**影响范围**：
+
+- `rethlas/presets.py` —— 删 `default_model` 字段；`BUILTIN_PRESETS` 14 条全部去掉该字段；`deepseek-1` 重命名。
+- `rethlas/config.py` —— `_resolve_env_preset` 检查 `model_env_override` 未设时抛错。
+- `tests/test_rethlas_presets.py` —— 删结构性测试 `test_every_preset_has_nonempty_key_env_and_default_model` 里的 `default_model` 断言；所有以前依赖"默认模型名"的测试改为显式 `setenv(<PRESET>_MODEL, ...)`。
+- `.env.example` —— 重写为完整参考卡形态。
+- `README.md` —— 预设表去掉"Default model"列。
+- 本地 `.env` —— 给启用的 7 个预设各加 `<PRESET>_MODEL=...`。
+
+**为什么这样改**：
+
+- 厂商的"默认"是软建议，不该硬编码。用户选什么模型是 ops 决策。
+- 厂商更新旗舰模型 → 用户改一行 `.env` 即可，**不需要 Rethlas 发版**。
+- 旧设计（写死 `deepseek-chat`）相当于把 Rethlas 的 release cadence 锁到所有上游厂商的旗舰更新节奏上。
+- arxiv_paper_tracker 也是这套设计：vendor 在源码里只有元数据，模型名走 env。
+
+

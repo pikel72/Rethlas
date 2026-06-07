@@ -6,30 +6,41 @@ from typing import Dict, Optional
 
 @dataclass(frozen=True)
 class PresetSpec:
-    """Static description of a built-in model preset backed by .env credentials."""
+    """Vendor metadata for a built-in env preset.
+
+    `BUILTIN_PRESETS` only carries **how to reach a vendor** (base URL, auth,
+    compat protocol). It does NOT carry a "default model name" — the real
+    model name is supplied by the user via `.env` (see
+    `model_env_override`). This keeps the system decoupled from any one
+    vendor's flagship release cycle: when a vendor ships a new model, the
+    user changes one line in `.env`, no Rethlas release required.
+    """
 
     name: str
     display_name: str
     base_url: Optional[str]
     compat: str  # "openai" or "anthropic"
     key_env: str
-    default_model: str
-    model_env_override: str
+    model_env_override: str  # env var name the user sets to pick the real model
     key_optional: bool = False
     base_url_env_override: Optional[str] = None  # if None, defaults to key_env + "_BASE"
 
 
-# Built-in presets. .env just needs <key_env>=... (and optionally <key_env>_BASE=...).
-# `compat` decides how LiteLLM routes the call.
+# Built-in presets. To use one:
+#   1. Set <key_env>=... in .env (or your shell).
+#   2. Set <model_env_override>=<real model name> in .env (REQUIRED).
+#   3. Optionally override <key_env>_BASE=... for proxies / self-hosted endpoints.
+#
+# `compat` decides how LiteLLM routes the call. The convention is "openai"
+# for OpenAI-compatible vendors and "anthropic" for Anthropic-compatible ones.
 BUILTIN_PRESETS: Dict[str, PresetSpec] = {
-    "deepseek-1": PresetSpec(
-        name="deepseek-1",
+    "deepseek": PresetSpec(
+        name="deepseek",
         display_name="DeepSeek",
         base_url="https://api.deepseek.com/v1",
         compat="openai",
         key_env="DEEPSEEK_API_KEY",
-        default_model="deepseek-chat",
-        model_env_override="DEEPSEEK_1_MODEL",
+        model_env_override="DEEPSEEK_MODEL",
     ),
     "openai": PresetSpec(
         name="openai",
@@ -37,7 +48,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://api.openai.com/v1",
         compat="openai",
         key_env="OPENAI_API_KEY",
-        default_model="gpt-5",
         model_env_override="OPENAI_MODEL",
     ),
     "claude": PresetSpec(
@@ -46,7 +56,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://api.anthropic.com/v1",
         compat="anthropic",
         key_env="ANTHROPIC_API_KEY",
-        default_model="claude-opus-4-5",
         model_env_override="CLAUDE_MODEL",
     ),
     "gemini": PresetSpec(
@@ -55,7 +64,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         compat="openai",
         key_env="GOOGLE_API_KEY",
-        default_model="gemini-2.5-pro",
         model_env_override="GEMINI_MODEL",
     ),
     "qwen": PresetSpec(
@@ -64,7 +72,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         compat="openai",
         key_env="QWEN_API_KEY",
-        default_model="qwen-plus",
         model_env_override="QWEN_MODEL",
     ),
     "kimi": PresetSpec(
@@ -73,7 +80,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://api.moonshot.cn/v1",
         compat="openai",
         key_env="KIMI_API_KEY",
-        default_model="kimi-k2-0711-preview",
         model_env_override="KIMI_MODEL",
     ),
     "openrouter": PresetSpec(
@@ -82,7 +88,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://openrouter.ai/api/v1",
         compat="openai",
         key_env="OPENROUTER_API_KEY",
-        default_model="openai/gpt-4o",
         model_env_override="OPENROUTER_MODEL",
     ),
     "ollama": PresetSpec(
@@ -91,7 +96,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="http://localhost:11434/v1",
         compat="openai",
         key_env="OLLAMA_API_KEY",
-        default_model="llama3.1",
         model_env_override="OLLAMA_MODEL",
         key_optional=True,
     ),
@@ -101,7 +105,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://open.bigmodel.cn/api/paas/v4/",
         compat="openai",
         key_env="GLM_API_KEY",
-        default_model="glm-4.5",
         model_env_override="GLM_MODEL",
     ),
     "MiniMax": PresetSpec(
@@ -110,7 +113,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://api.MiniMax.io/v1",
         compat="openai",
         key_env="MiniMax_API_KEY",
-        default_model="MiniMax-M3",
         model_env_override="MiniMax_MODEL",
     ),
     "siliconflow": PresetSpec(
@@ -119,7 +121,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://api.siliconflow.cn/v1",
         compat="openai",
         key_env="SILICONFLOW_API_KEY",
-        default_model="Qwen/Qwen2.5-72B-Instruct",
         model_env_override="SILICONFLOW_MODEL",
     ),
     "doubao": PresetSpec(
@@ -128,7 +129,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         compat="openai",
         key_env="DOUBAO_API_KEY",
-        default_model="doubao-seed-1-6-250615",
         model_env_override="DOUBAO_MODEL",
     ),
     "mimo": PresetSpec(
@@ -137,7 +137,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url="https://api.xiaomi.com/v1",
         compat="openai",
         key_env="MIMO_API_KEY",
-        default_model="mimo-7b",
         model_env_override="MIMO_MODEL",
     ),
     "custom": PresetSpec(
@@ -146,7 +145,6 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
         base_url=None,
         compat="openai",
         key_env="CUSTOM_API_KEY",
-        default_model="custom",
         model_env_override="CUSTOM_MODEL",
         key_optional=True,
         base_url_env_override="CUSTOM_API_BASE",

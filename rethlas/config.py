@@ -94,11 +94,14 @@ def _resolve_env_preset(name: str) -> ModelConfig:
     if name == "custom":
         base_url = os.getenv("CUSTOM_API_BASE")
         compat = os.getenv("CUSTOM_COMPAT", "").strip().lower()
+        custom_model = os.getenv("CUSTOM_MODEL")
         missing = []
         if not base_url:
             missing.append("CUSTOM_API_BASE")
         if compat not in {"openai", "anthropic"}:
             missing.append("CUSTOM_COMPAT (openai|anthropic)")
+        if not custom_model:
+            missing.append("CUSTOM_MODEL")
         if missing:
             raise ValueError(
                 f"Preset 'custom' requires the following env var(s) to be set: "
@@ -119,7 +122,13 @@ def _resolve_env_preset(name: str) -> ModelConfig:
         )
         compat = preset.compat
 
-    model_name = os.getenv(preset.model_env_override) or preset.default_model
+    model_name = os.getenv(preset.model_env_override)
+    if not model_name:
+        raise ValueError(
+            f"Preset {name!r} requires {preset.model_env_override} to be set in .env. "
+            f"See .env.example for the current recommended model names per vendor. "
+            f"Unset RETHLAS_MODEL to use the default (Codex) instead."
+        )
 
     return ModelConfig(
         name=name,

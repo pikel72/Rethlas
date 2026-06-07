@@ -166,41 +166,47 @@ port = 8091
 Rethlas reads model configuration from two places:
 
 - `rethlas.toml`: holds `[runtime]`, `[providers.*]`, and a small set of toml profiles (`gpt-5.5`, `codex-fast`, `codex-deep`, and 4 `mock-*`).
-- `.env`: holds API keys and per-preset overrides for the 14 built-in env presets (deepseek, openai, claude, gemini, qwen, kimi, openrouter, ollama, glm, MiniMax, siliconflow, doubao, mimo, custom).
+- `.env`: holds API keys, base URLs, and **the real model name** for each of the 14 built-in env presets.
 
-The default runtime is still Codex CLI. To switch to a cloud vendor, fill in `<VENDOR>_API_KEY` in `.env` and set `RETHLAS_MODEL=<preset>` (or pass `--model <preset>`).
+The default runtime is still Codex CLI. To switch to a cloud vendor, fill in `<VENDOR>_API_KEY` and `<VENDOR>_MODEL` in `.env` and set `RETHLAS_MODEL=<preset>` (or pass `--model <preset>`).
+
+### How preset resolution works
+
+`BUILTIN_PRESETS` (in `rethlas/presets.py`) carries **vendor metadata only** — `base_url`, `compat` (openai-compatible vs anthropic-compatible), and which env var holds the API key. It does **not** carry a "default model name". The real model name is supplied by you in `.env` via `<VENDOR>_MODEL` (e.g. `DEEPSEEK_MODEL=deepseek-chat`).
+
+This means when a vendor ships a new flagship model, you change one line in `.env` — Rethlas does not need a release. `.env.example` lists the current recommended model names per vendor; verify against the vendor's own docs for the latest options.
 
 ### Built-in env presets
 
-| Preset name   | Vendor                  | Required env var       | Default model                |
-|---------------|-------------------------|------------------------|------------------------------|
-| `deepseek-1`  | DeepSeek                | `DEEPSEEK_API_KEY`     | `deepseek-chat`              |
-| `openai`      | OpenAI                  | `OPENAI_API_KEY`       | `gpt-5`                      |
-| `claude`      | Anthropic               | `ANTHROPIC_API_KEY`    | `claude-opus-4-5`            |
-| `gemini`      | Google Gemini           | `GOOGLE_API_KEY`       | `gemini-2.5-pro`             |
-| `qwen`        | 通义千问 (DashScope)    | `QWEN_API_KEY`         | `qwen-plus`                  |
-| `kimi`        | Moonshot Kimi           | `KIMI_API_KEY`         | `kimi-k2-0711-preview`       |
-| `openrouter`  | OpenRouter              | `OPENROUTER_API_KEY`   | `openai/gpt-4o`              |
-| `ollama`      | Ollama (local)          | `OLLAMA_API_KEY` (可空) | `llama3.1`                  |
-| `glm`         | 智谱 GLM                 | `GLM_API_KEY`          | `glm-4.5`                    |
-| `MiniMax`     | MiniMax                 | `MiniMax_API_KEY`     | `MiniMax-M3`                |
-| `siliconflow` | 硅基流动 (SiliconFlow)  | `SILICONFLOW_API_KEY`  | `Qwen/Qwen2.5-72B-Instruct`  |
-| `doubao`      | 豆包 (火山方舟)         | `DOUBAO_API_KEY`       | `doubao-seed-1-6-250615`     |
-| `mimo`        | 小米 MiMo               | `MIMO_API_KEY`         | `mimo-7b`                    |
-| `custom`      | 任意未列出厂商 (自填)   | `CUSTOM_API_KEY` + `CUSTOM_API_BASE` + `CUSTOM_COMPAT` | `<preset name>` |
+| Preset name   | Vendor                  | Required env var       | Model env var (you set) |
+|---------------|-------------------------|------------------------|-------------------------|
+| `deepseek`    | DeepSeek                | `DEEPSEEK_API_KEY`     | `DEEPSEEK_MODEL`        |
+| `openai`      | OpenAI                  | `OPENAI_API_KEY`       | `OPENAI_MODEL`          |
+| `claude`      | Anthropic               | `ANTHROPIC_API_KEY`    | `CLAUDE_MODEL`          |
+| `gemini`      | Google Gemini           | `GOOGLE_API_KEY`       | `GEMINI_MODEL`          |
+| `qwen`        | 通义千问 (DashScope)    | `QWEN_API_KEY`         | `QWEN_MODEL`            |
+| `kimi`        | Moonshot Kimi           | `KIMI_API_KEY`         | `KIMI_MODEL`            |
+| `openrouter`  | OpenRouter              | `OPENROUTER_API_KEY`   | `OPENROUTER_MODEL`      |
+| `ollama`      | Ollama (local)          | `OLLAMA_API_KEY` (可空) | `OLLAMA_MODEL`         |
+| `glm`         | 智谱 GLM                 | `GLM_API_KEY`          | `GLM_MODEL`             |
+| `MiniMax`     | MiniMax                 | `MiniMax_API_KEY`     | `MiniMax_MODEL`        |
+| `siliconflow` | 硅基流动 (SiliconFlow)  | `SILICONFLOW_API_KEY`  | `SILICONFLOW_MODEL`     |
+| `doubao`      | 豆包 (火山方舟)         | `DOUBAO_API_KEY`       | `DOUBAO_MODEL`          |
+| `mimo`        | 小米 MiMo               | `MIMO_API_KEY`         | `MIMO_MODEL`            |
+| `custom`      | 任意未列出厂商 (自填)   | `CUSTOM_API_KEY` + `CUSTOM_API_BASE` + `CUSTOM_COMPAT` | `CUSTOM_MODEL` |
 
-Each preset also has two optional env vars:
+Each preset also has one optional env var for proxy / self-hosted endpoints:
 
-- `<VENDOR>_API_BASE`: override the default `base_url` (for proxies or self-hosted endpoints).
-- `<PRESET>_MODEL` (e.g. `DEEPSEEK_1_MODEL`): override the default real model name.
+- `<VENDOR>_API_BASE`: override the default `base_url`.
 
 ### Use a preset
 
-Set the key in `.env` and run:
+Set the key **and** the model name in `.env`, then run:
 
 ```bash
 export DEEPSEEK_API_KEY="sk-..."
-export RETHLAS_MODEL=deepseek-1
+export DEEPSEEK_MODEL="deepseek-chat"
+export RETHLAS_MODEL="deepseek"
 python -m rethlas.cli run ns/ns
 ```
 
@@ -208,20 +214,27 @@ PowerShell equivalent:
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "sk-..."
-$env:RETHLAS_MODEL = "deepseek-1"
+$env:DEEPSEEK_MODEL = "deepseek-chat"
+$env:RETHLAS_MODEL = "deepseek"
 python -m rethlas.cli run ns/ns
 ```
 
 Inspect the resolved plan before a long run:
 
 ```bash
-python -m rethlas.cli plan --role generation --problem ns/ns --model deepseek-1
-python -m rethlas.cli plan --role verification --model deepseek-1
+python -m rethlas.cli plan --role generation --problem ns/ns --model deepseek
+python -m rethlas.cli plan --role verification --model deepseek
 ```
 
-### Switch the real model name
+### Pick a different model
 
-`DEEPSEEK_1_MODEL=deepseek-reasoner` makes `deepseek-1` resolve to `deepseek-reasoner` instead of `deepseek-chat`, with no code change.
+Change `<VENDOR>_MODEL` in `.env`:
+
+```bash
+DEEPSEEK_MODEL=deepseek-reasoner
+```
+
+This is the only place you need to edit when a vendor releases a new model — no Python change, no Rethlas release. `.env.example` is the source of truth for what's currently recommended; verify against the vendor's own docs for the latest options.
 
 ### Custom (任意未列出厂商)
 
@@ -232,6 +245,8 @@ CUSTOM_COMPAT=openai
 CUSTOM_MODEL=llama-3.3-70b
 RETHLAS_MODEL=custom
 ```
+
+All four are required — `CUSTOM_MODEL` is not optional because the `custom` slot has no default model.
 
 ### Switch back to Codex
 
@@ -258,14 +273,14 @@ The 14 built-in presets are not user-extensible from `.env`. To add a new vendor
 
 | Variable | Purpose |
 |---|---|
-| `<VENDOR>_API_KEY` | API key for the vendor (e.g. `DEEPSEEK_API_KEY`). |
-| `<VENDOR>_API_BASE` | Override the default base URL. |
-| `<PRESET>_MODEL` | Override the default real model name. |
+| `<VENDOR>_API_KEY` | API key for the vendor (e.g. `DEEPSEEK_API_KEY`). **Required** to use the preset. |
+| `<VENDOR>_API_BASE` | Override the default `base_url`. **Optional**; for proxies or self-hosted endpoints. |
+| `<VENDOR>_MODEL` | Real model name (e.g. `DEEPSEEK_MODEL=deepseek-chat`). **Required** to use the preset — no hardcoded defaults. |
 | `RETHLAS_MODEL` | Selects the active preset. Overridden by `--model` on the CLI. |
 | `RETHLAS_VERIFICATION_MODEL` | Selects the preset for the verification agent (defaults to `RETHLAS_MODEL`). |
 | `CODEX_BIN` | Codex CLI binary name (defaults to `codex`). |
 
-`.env.example` lists every supported variable with a comment describing the matching preset.
+`.env.example` lists every supported variable with a full reference card (vendor home, API docs, key signup, current recommended model names).
 
 ### Mock Models
 

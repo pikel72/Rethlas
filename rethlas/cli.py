@@ -110,13 +110,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         status = "ready" if (preset.key_optional or key_set) else f"missing {preset.key_env}"
         print(f"  {name} ({preset.display_name}): {status}")
         if args.verbose:
+            model_set = bool(os.getenv(preset.model_env_override))
             print(
                 f"    base_url={preset.base_url or '(none)'} "
                 f"compat={preset.compat} "
                 f"key_env={preset.key_env} "
                 f"key_set={key_set} "
                 f"base_override={base_override or '(none)'} "
-                f"default_model={preset.default_model}"
+                f"model_env={preset.model_env_override} "
+                f"model_set={model_set}"
             )
     if args.verbose and "custom" in BUILTIN_PRESETS:
         custom = BUILTIN_PRESETS["custom"]

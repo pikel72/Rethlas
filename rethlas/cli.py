@@ -11,6 +11,7 @@ from typing import Optional
 
 from .config import load_config
 from .agent_loop import run_native_generation
+from .events import append_event
 from .problems import normalize_problem
 from .references import prepare_references
 from .runtime import backend_for, build_plan, build_request, missing_runtime_dependencies
@@ -173,6 +174,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"verified blueprint: {str(status.verified_exists).lower()}")
     if status.latest_log_line:
         print(f"latest log line: {status.latest_log_line}")
+    if status.latest_events:
+        print("latest events:")
+        for event in status.latest_events:
+            print(f"  {event.get('timestamp_utc')} {event.get('event_type')}")
     print(f"verifier reachable: {str(verifier_health(config.verification.base_url)).lower()}")
     return 0
 
@@ -194,6 +199,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"verification url: {config.verification.base_url}")
     print(f"verifier reachable: {str(verifier_health(config.verification.base_url)).lower()}")
     _print_plan(plan)
+    append_event(
+        problem.log_dir,
+        "run_planned",
+        {"provider": plan.provider_name, "model": plan.model_profile, "dry_run": args.dry_run},
+    )
     for warning in refs.warnings:
         print(f"warning: {warning}")
     if missing:
@@ -202,6 +212,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 2
 
     if args.dry_run:
+        append_event(problem.log_dir, "run_dry_run_finished", {"model": plan.model_profile})
         return 0
 
     if plan.provider_kind != "codex-cli" and args.role == "generation":
@@ -216,6 +227,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"draft: {result.draft_path}")
         if result.verified_path.exists():
             print(f"verified: {result.verified_path}")
+        append_event(problem.log_dir, "run_finished", {"returncode": result.returncode, "message": result.message})
         return result.returncode
 
     backend = backend_for(request.provider)
@@ -223,9 +235,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         result = backend.run(request, stream=not args.no_live_log)
         if result.error:
             print(f"runtime error: {result.error}")
+        append_event(problem.log_dir, "run_finished", {"returncode": result.returncode, "error": result.error})
         return result.returncode
     except Exception as exc:
         print(f"runtime failed: {exc}")
+        append_event(problem.log_dir, "run_failed", {"error": str(exc)})
         return 1
 
 

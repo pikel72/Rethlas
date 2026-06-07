@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .problems import ProblemPaths
+from .events import latest_events
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class ProblemStatus:
     latest_log_line: Optional[str]
     memory_files: List[Path]
     result_files: List[Path]
+    latest_events: List[dict]
 
 
 def _latest_nonempty_line(path: Path) -> Optional[str]:
@@ -45,4 +47,5 @@ def inspect_problem_status(problem: ProblemPaths) -> ProblemStatus:
         latest_log_line=_latest_nonempty_line(problem.log_file),
         memory_files=memory_files,
         result_files=result_files,
+        latest_events=latest_events(problem.log_dir),
     )

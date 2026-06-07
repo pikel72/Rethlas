@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import RethlasConfig
+from .events import append_event
 from .problems import ProblemPaths
 from .references import ReferencePreparation
 from .runtime import RuntimeRequest, backend_for
@@ -28,6 +29,11 @@ def run_native_generation(
     stream: bool = True,
 ) -> NativeGenerationResult:
     registry = build_generation_tool_registry(config)
+    append_event(
+        problem.log_dir,
+        "native_generation_started",
+        {"provider": request.provider.name, "model": request.model.name},
+    )
     registry.call(
         "memory_init",
         {
@@ -71,6 +77,11 @@ def run_native_generation(
                 },
             },
         )
+        append_event(
+            problem.log_dir,
+            "artifact_written",
+            {"draft_path": str(draft_path), "verified_path": str(verified_path), "mock": True},
+        )
         return NativeGenerationResult(
             returncode=0,
             draft_path=draft_path,
@@ -98,6 +109,11 @@ def run_native_generation(
     )
     runtime_result = backend_for(request.provider).run(runtime_request, stream=stream)
     if runtime_result.returncode != 0:
+        append_event(
+            problem.log_dir,
+            "run_failed",
+            {"returncode": runtime_result.returncode, "error": runtime_result.error},
+        )
         return NativeGenerationResult(
             returncode=runtime_result.returncode,
             draft_path=draft_path,
@@ -114,6 +130,7 @@ def run_native_generation(
             "record": {"event_type": "artifact_written", "draft_path": str(draft_path)},
         },
     )
+    append_event(problem.log_dir, "artifact_written", {"draft_path": str(draft_path)})
     return NativeGenerationResult(
         returncode=0,
         draft_path=draft_path,

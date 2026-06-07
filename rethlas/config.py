@@ -48,6 +48,13 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class AgentsConfig:
+    max_threads: int = 10
+    max_depth: int = 3
+    job_max_runtime_seconds: int = 3600
+
+
+@dataclass(frozen=True)
 class VerificationConfig:
     host: str = "127.0.0.1"
     port: int = 8091
@@ -67,6 +74,7 @@ class PathsConfig:
 class RethlasConfig:
     repo_root: Path
     runtime: RuntimeConfig
+    agents: AgentsConfig
     providers: Mapping[str, ProviderConfig]
     models: Mapping[str, ModelConfig]
     verification: VerificationConfig
@@ -122,6 +130,13 @@ def load_config(repo_root: Optional[Path] = None) -> RethlasConfig:
     runtime = RuntimeConfig(
         default_model=str(runtime_raw.get("default_model", "gpt-5.5")),
         timeout_seconds=int(runtime_raw.get("timeout_seconds", 3600)),
+    )
+
+    agents_raw = _as_dict(raw.get("agents"), "agents")
+    agents = AgentsConfig(
+        max_threads=int(agents_raw.get("max_threads", 10)),
+        max_depth=int(agents_raw.get("max_depth", 3)),
+        job_max_runtime_seconds=int(agents_raw.get("job_max_runtime_seconds", 3600)),
     )
 
     providers: Dict[str, ProviderConfig] = {}
@@ -182,6 +197,7 @@ def load_config(repo_root: Optional[Path] = None) -> RethlasConfig:
     return RethlasConfig(
         repo_root=root,
         runtime=runtime,
+        agents=agents,
         providers=providers,
         models=models,
         verification=verification,

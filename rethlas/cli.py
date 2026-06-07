@@ -17,6 +17,7 @@ from .references import prepare_references
 from .runtime import backend_for, build_plan, build_request, missing_runtime_dependencies
 from .status import inspect_problem_status
 from .tools import build_generation_tool_registry
+from .subagents import SubAgentRunner, SubAgentTask
 
 
 def build_generation_prompt(problem_path: str, problem_id: str, reference_prompt: str) -> str:
@@ -80,6 +81,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"repo: {config.repo_root}")
     print(f"default model: {config.runtime.default_model}")
     print(f"verification url: {config.verification.base_url}")
+    print(
+        "agents: "
+        f"max_threads={config.agents.max_threads} "
+        f"max_depth={config.agents.max_depth} "
+        f"job_max_runtime_seconds={config.agents.job_max_runtime_seconds}"
+    )
     print("")
     print("models:")
     for model in config.models.values():
@@ -294,6 +301,20 @@ def cmd_verify_server(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def cmd_subagent_check(args: argparse.Namespace) -> int:
+    config = load_config()
+    runner = SubAgentRunner(config)
+    results = runner.run_mock_batch(
+        [
+            SubAgentTask(task_id="task-1", prompt="prove subgoal 1", depth=1),
+            SubAgentTask(task_id="too-deep", prompt="prove too deep", depth=config.agents.max_depth + 1),
+        ]
+    )
+    for result in results:
+        print(f"{result.task_id}: ok={result.ok} depth={result.depth} summary={result.summary}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rethlas")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -324,6 +345,9 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("status", help="Inspect logs, memory, and result files for a problem")
     status.add_argument("problem", nargs="?", default="example")
     status.set_defaults(func=cmd_status)
+
+    subagent_check = subparsers.add_parser("subagent-check", help="Run a deterministic sub-agent constraint check")
+    subagent_check.set_defaults(func=cmd_subagent_check)
 
     plan = subparsers.add_parser("plan", help="Print the selected runtime plan")
     plan.add_argument("--role", choices=["generation", "verification"], default="generation")

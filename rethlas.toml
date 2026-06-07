@@ -2,6 +2,11 @@
 default_model = "gpt-5.5"
 timeout_seconds = 3600
 
+[agents]
+max_threads = 10
+max_depth = 3
+job_max_runtime_seconds = 3600
+
 [providers.codex]
 kind = "codex-cli"
 command = "codex"

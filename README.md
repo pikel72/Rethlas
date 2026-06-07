@@ -1,14 +1,16 @@
 # Rethlas
 
-Rethlas is a natural-language reasoning system for mathematics built around two Codex agents:
+Rethlas is a natural-language reasoning system for mathematics built around generation and verification agents:
 
 - The generation agent reads a math problem from a markdown file and writes an informal proof blueprint.
 - The verification agent checks that proof blueprint, produces a structured verdict, and serves as the generation agent's verifier.
 
+The default backend remains Codex CLI, but the repository now has a runtime layer for Codex CLI, LiteLLM-backed OpenAI/Anthropic models, and deterministic mock profiles.
+
 The intended deployment order is:
 
 1. Start the verification agent as a local HTTP service.
-2. Run the generation agent through Codex.
+2. Run the generation agent through the selected runtime backend.
 3. Let the generation agent call the verification service during its proof-and-repair loop.
 
 ## Repository Layout
@@ -24,9 +26,9 @@ In particular,
 - Original problems are put in `agents/generation/data/`, e.g. unclassified problem `agents/generation/data/example.md`, or classfied problem `agents/generation/data/modrep/modrep.md`, `agents/generation/data/example/example1.md`.
 - Zola project to render the results in a static website is in `agents/generation/site/`.
 
-## 1. Install Codex CLI
+## 1. Install Runtime Dependencies
 
-Install the Codex CLI:
+For the default Codex backend, install the Codex CLI:
 
 ```bash
 npm install -g @openai/codex
@@ -64,14 +66,17 @@ chmod +x ./rethlas.sh
 ```
 
 The shell launcher provides the same basic menu. The current launchers still use the existing Codex-based agents internally, but they remove the need to remember the `agents/generation` and `agents/verification` working directories.
+The shell launcher provides the same basic menu. The default model profile still uses Codex, but `rethlas.toml` can select LiteLLM-backed OpenAI/Anthropic profiles.
 
-Runtime providers and model profiles are configured in `rethlas.toml`. The current implemented runtime is `codex-cli`; `openai-compatible` and `anthropic-compatible` provider formats are represented in the configuration and runtime planner so direct API backends can be added without changing the launcher surface.
+Runtime providers and model profiles are configured in `rethlas.toml`. Implemented runtime kinds include `codex-cli`, `litellm`, and `mock`; native `openai-compatible` and `anthropic-compatible` provider formats are represented for future direct API backends.
 
 LiteLLM is the planned shared model-call layer for OpenAI and Anthropic models. Install root runtime dependencies with:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+LiteLLM verification can write normalized `verification.json`. LiteLLM generation has a native tool loop and writes `blueprint.md`; it performs one verifier pass when the verification service is reachable.
 
 To inspect the effective runtime plan:
 

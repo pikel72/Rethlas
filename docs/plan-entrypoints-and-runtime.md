@@ -10,6 +10,16 @@ The immediate usability target is click-to-open on Windows: a user should be abl
 
 ## Current state
 
+Implementation status as of the current branch:
+
+- Root launchers exist: `rethlas.bat`, `rethlas.ps1`, and `rethlas.sh`.
+- `rethlas.toml` defines Codex, LiteLLM, native OpenAI/Anthropic placeholders, and mock profiles.
+- Verification API uses shared runtime backends instead of hardcoding `codex exec`.
+- LiteLLM verification extracts/validates JSON and writes `verification.json`.
+- Native LiteLLM generation has a tool-call loop, writes `blueprint.md`, and performs one verifier pass when the verifier service is reachable.
+- Mock generation/verification profiles provide regression coverage without Codex or API keys.
+- Legacy generation runners delegate to the root CLI.
+
 The current runnable path is:
 
 1. Start the verification agent manually from `agents/verification`.

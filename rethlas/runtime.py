@@ -88,11 +88,6 @@ class CodexCliBackend(RuntimeBackend):
         return args
 
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
-        notes = ["LiteLLM backend supports plain model calls."]
-        if request.role == "verification":
-            notes.append("Verification JSON extraction and writing is implemented.")
-        else:
-            notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,
@@ -174,11 +169,6 @@ class CodexCliBackend(RuntimeBackend):
 
 class ApiCompatibleBackend(RuntimeBackend):
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
-        notes = ["LiteLLM backend supports plain model calls."]
-        if request.role == "verification":
-            notes.append("Verification JSON extraction and writing is implemented.")
-        else:
-            notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,

@@ -113,7 +113,21 @@ def run_native_generation(
             message=f"native generation model call failed: {exc}",
         )
 
+    if verified_path.exists():
+        verified_path.unlink()
     draft_path.write_text(draft, encoding="utf-8")
+    verification = registry.call(
+        "verify_proof_service",
+        {"statement": problem.problem_file.read_text(encoding="utf-8"), "proof": draft},
+    )
+    if verification.ok:
+        report = verification.result
+        verdict = report.get("verdict") if isinstance(report, dict) else None
+        append_event(problem.log_dir, "verification_finished", {"verdict": verdict})
+        if verdict == "correct":
+            verified_path.write_text(draft, encoding="utf-8")
+    else:
+        append_event(problem.log_dir, "verification_failed", {"error": verification.error})
     registry.call(
         "memory_append",
         {
@@ -122,12 +136,18 @@ def run_native_generation(
             "record": {"event_type": "artifact_written", "draft_path": str(draft_path)},
         },
     )
+    if verified_path.exists():
+        message = "native generation wrote blueprint.md and verifier accepted blueprint_verified.md"
+    elif verification.ok:
+        message = "native generation wrote blueprint.md; verifier did not accept it yet"
+    else:
+        message = f"native generation wrote blueprint.md; verification was unavailable: {verification.error}"
     append_event(problem.log_dir, "artifact_written", {"draft_path": str(draft_path)})
     return NativeGenerationResult(
         returncode=0,
         draft_path=draft_path,
         verified_path=verified_path,
-        message="native generation wrote blueprint.md; verification loop is not implemented for LiteLLM generation yet",
+        message=message,
     )
 
 

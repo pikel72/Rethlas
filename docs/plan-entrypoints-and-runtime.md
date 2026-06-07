@@ -170,7 +170,7 @@ LiteLLM should be treated as a model gateway, not as the Rethlas agent framework
 The abstraction should distinguish provider format from model profile:
 
 - provider format: `codex-cli`, `openai-compatible`, `anthropic-compatible`
-- model profile: a named configuration such as `gpt-5.5`, `openai-default`, or `anthropic-default`
+- model profile: a named configuration such as `gpt-5.5`, `openai`, or `claude`
 
 That lets multiple models share one provider while still carrying provider-specific options such as reasoning effort, base URL, and API key environment variable.
 
@@ -368,8 +368,8 @@ Acceptance checks:
 - `git status --short --ignored` shows only expected ignored runtime artifacts after staging.
 - `python -m rethlas.cli doctor`
 - `python -m rethlas.cli plan --role generation --problem ns/ns`
-- `python -m rethlas.cli plan --role generation --problem ns/ns --model openai-default`
-- `python -m rethlas.cli plan --role verification --model anthropic-default --json`
+- `python -m rethlas.cli plan --role generation --problem ns/ns --model openai` (requires `OPENAI_API_KEY`)
+- `python -m rethlas.cli plan --role verification --model claude` (requires `ANTHROPIC_API_KEY`)
 - `powershell -NoProfile -ExecutionPolicy Bypass -File agents/generation/tests/run_example.ps1 -ProblemFile ns/ns -DryRun -NoLiveLog`
 - `cmd /c "echo 0|rethlas.bat"`
 
@@ -488,8 +488,8 @@ Tasks:
 
 Acceptance checks:
 
-- `RETHLAS_MODEL=openai-default` verifier plan reports LiteLLM and `OPENAI_API_KEY`.
-- `RETHLAS_MODEL=anthropic-default` verifier plan reports LiteLLM and `ANTHROPIC_API_KEY`.
+- `RETHLAS_MODEL=openai` (with `OPENAI_API_KEY` set) verifier plan reports LiteLLM and the `openai` profile.
+- `RETHLAS_MODEL=claude` (with `ANTHROPIC_API_KEY` set) verifier plan reports LiteLLM and the `claude` profile.
 - With valid API keys, `/verify` returns a schema-valid response for a trivial theorem.
 - With invalid output, API returns a useful error and preserves raw text in `log.md`.
 

@@ -40,6 +40,13 @@ if ($ProblemFile -eq ".." -or $ProblemFile.StartsWith("../") -or $ProblemFile.Co
 if (-not $ProblemFile.StartsWith("data/")) {
     $ProblemFile = "data/$ProblemFile"
 }
+if (-not $ProblemFile.EndsWith(".md")) {
+    $Extension = [System.IO.Path]::GetExtension($ProblemFile)
+    if (-not [string]::IsNullOrWhiteSpace($Extension)) {
+        throw "PROBLEM_FILE must point to a markdown file under data/: $ProblemFile"
+    }
+    $ProblemFile = "$ProblemFile.md"
+}
 if (-not ($ProblemFile -like "data/*.md")) {
     throw "PROBLEM_FILE must point to a markdown file under data/: $ProblemFile"
 }

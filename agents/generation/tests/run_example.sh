@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROBLEM_FILE="${PROBLEM_FILE:-data/example.md}"
 MODEL="${MODEL:-gpt-5.5}"
 REASONING_EFFORT="${REASONING_EFFORT:-xhigh}"
+DRY_RUN="${DRY_RUN:-0}"
+
+PROBLEM_FILE="${PROBLEM_FILE//\\//}"
 
 if [[ "$PROBLEM_FILE" = /* ]]; then
   echo "PROBLEM_FILE must be relative to agents/generation: $PROBLEM_FILE" >&2
@@ -14,6 +17,19 @@ fi
 if [[ "$PROBLEM_FILE" == ".." || "$PROBLEM_FILE" == ../* || "$PROBLEM_FILE" == */.. || "$PROBLEM_FILE" == */../* ]]; then
   echo "PROBLEM_FILE must not contain '..': $PROBLEM_FILE" >&2
   exit 1
+fi
+
+if [[ "$PROBLEM_FILE" != data/* ]]; then
+  PROBLEM_FILE="data/$PROBLEM_FILE"
+fi
+
+if [[ "$PROBLEM_FILE" != *.md ]]; then
+  problem_name="$(basename "$PROBLEM_FILE")"
+  if [[ "$problem_name" == *.* ]]; then
+    echo "PROBLEM_FILE must point to a markdown file under data/: $PROBLEM_FILE" >&2
+    exit 1
+  fi
+  PROBLEM_FILE="${PROBLEM_FILE}.md"
 fi
 
 if [[ "$PROBLEM_FILE" != data/*.md ]]; then
@@ -107,6 +123,16 @@ if ! curl -sf "$VERIFY_URL" >/dev/null 2>&1; then
   echo "         The agent will skip proof verification."
   echo "         Start it first if you need verified proofs."
   echo ""
+fi
+
+if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" || "$DRY_RUN" == "yes" ]]; then
+  echo "Dry run only. Codex command:"
+  printf '  codex exec -C %q -m %q --config %q --dangerously-bypass-approvals-and-sandbox %q\n' \
+    "$ROOT_DIR" \
+    "$MODEL" \
+    "model_reasoning_effort=\"$REASONING_EFFORT\"" \
+    "$prompt"
+  exit 0
 fi
 
 codex_rc=0

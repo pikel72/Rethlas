@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+
+import pytest
+
+from rethlas.config import load_config
+
 from rethlas.presets import BUILTIN_PRESETS, PresetSpec, base_url_env_name
 
 
@@ -64,12 +70,6 @@ def test_base_url_env_name_uses_override_when_set():
 
 def test_base_url_env_name_defaults_to_key_env_plus_base_suffix():
     assert base_url_env_name(BUILTIN_PRESETS["deepseek-1"]) == "DEEPSEEK_API_KEY_BASE"
-
-
-import os
-import pytest
-
-from rethlas.config import load_config
 
 
 @pytest.fixture

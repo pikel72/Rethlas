@@ -483,6 +483,8 @@ Acceptance checks:
 - With valid API keys, `/verify` returns a schema-valid response for a trivial theorem.
 - With invalid output, API returns a useful error and preserves raw text in `log.md`.
 
+Implementation note: the LiteLLM verifier path should write raw model output to `log.md` first, then extract the first valid JSON object, validate it, and write normalized `verification.json`.
+
 ### Stage 5: Tool and MCP bridge design for generation
 
 Goal: replace Codex CLI's implicit agent/tool environment with an explicit Rethlas-controlled loop.

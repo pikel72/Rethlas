@@ -88,6 +88,11 @@ class CodexCliBackend(RuntimeBackend):
         return args
 
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
+        notes = ["LiteLLM backend supports plain model calls."]
+        if request.role == "verification":
+            notes.append("Verification JSON extraction and writing is implemented.")
+        else:
+            notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,
@@ -169,6 +174,11 @@ class CodexCliBackend(RuntimeBackend):
 
 class ApiCompatibleBackend(RuntimeBackend):
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
+        notes = ["LiteLLM backend supports plain model calls."]
+        if request.role == "verification":
+            notes.append("Verification JSON extraction and writing is implemented.")
+        else:
+            notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,
@@ -197,6 +207,11 @@ class LiteLLMBackend(RuntimeBackend):
         return request.model.api_key_env or request.provider.api_key_env
 
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
+        notes = ["LiteLLM backend supports plain model calls."]
+        if request.role == "verification":
+            notes.append("Verification JSON extraction and writing is implemented.")
+        else:
+            notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,
@@ -209,10 +224,7 @@ class LiteLLMBackend(RuntimeBackend):
             api_base_url=request.provider.base_url,
             api_key_env=self._api_key_env(request),
             implemented=True,
-            notes=[
-                "LiteLLM backend supports plain model calls.",
-                "Full Rethlas tool/MCP loop integration is not implemented yet.",
-            ],
+            notes=notes,
         )
 
     def run(self, request: RuntimeRequest, *, stream: bool = True) -> RuntimeResult:
@@ -225,24 +237,46 @@ class LiteLLMBackend(RuntimeBackend):
 
         started_at = _utc_now()
         request.log_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt = request.prompt
+        if request.role == "verification":
+            prompt = _verification_json_prompt(request.prompt)
         response = litellm.completion(
             model=request.model.model,
-            messages=[{"role": "user", "content": request.prompt}],
+            messages=[{"role": "user", "content": prompt}],
             timeout=request.timeout_seconds,
         )
         content = response.choices[0].message.content or ""
-        request.log_path.write_text(content, encoding="utf-8")
+        log_text = (
+            f"started_at_utc: {started_at}\n"
+            f"provider: {request.provider.name} ({request.provider.kind})\n"
+            f"model_profile: {request.model.name}\n"
+            f"model: {request.model.model}\n\n"
+            f"{content}"
+        )
+        request.log_path.write_text(log_text, encoding="utf-8")
+        error: Optional[str] = None
+        returncode = 0
+        if request.role == "verification":
+            try:
+                payload = _extract_json_object(content)
+                _validate_verification_payload(payload)
+                output_path = request.log_path.parent / "verification.json"
+                output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            except ValueError as exc:
+                error = str(exc)
+                returncode = 1
         if stream:
             print(content)
         usage = getattr(response, "usage", None)
         return RuntimeResult(
-            returncode=0,
+            returncode=returncode,
             started_at=started_at,
             ended_at=_utc_now(),
             log_path=request.log_path,
             output_text=content,
             usage=usage if isinstance(usage, dict) else None,
             provider_metadata={"provider": request.provider.name, "model": request.model.model},
+            error=error,
         )
 
 
@@ -372,3 +406,60 @@ def _extract_run_id(prompt: str) -> str:
     if match:
         return match.group(1)
     return "mock_run"
+
+
+def _verification_json_prompt(prompt: str) -> str:
+    return (
+        prompt
+        + "\n\n"
+        + "Return only a JSON object with exactly these top-level keys: "
+        + "verification_report, verdict, repair_hints. "
+        + "verification_report must contain summary, critical_errors, and gaps. "
+        + "verdict must be either correct or wrong. Do not wrap the JSON in markdown."
+    )
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("model returned empty verification output")
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("model output did not contain a JSON object")
+        try:
+            payload = json.loads(stripped[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"model output contained invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("verification output must be a JSON object")
+    return payload
+
+
+def _validate_verification_payload(payload: Dict[str, Any]) -> None:
+    report = payload.get("verification_report")
+    verdict = payload.get("verdict")
+    repair_hints = payload.get("repair_hints")
+    if not isinstance(report, dict):
+        raise ValueError("verification_report must be an object")
+    if verdict not in {"correct", "wrong"}:
+        raise ValueError("verdict must be 'correct' or 'wrong'")
+    if not isinstance(repair_hints, str):
+        raise ValueError("repair_hints must be a string")
+    for key in ("summary", "critical_errors", "gaps"):
+        if key not in report:
+            raise ValueError(f"verification_report.{key} is missing")
+    if not isinstance(report["summary"], str):
+        raise ValueError("verification_report.summary must be a string")
+    if not isinstance(report["critical_errors"], list):
+        raise ValueError("verification_report.critical_errors must be a list")
+    if not isinstance(report["gaps"], list):
+        raise ValueError("verification_report.gaps must be a list")
+    has_findings = bool(report["critical_errors"] or report["gaps"])
+    if verdict == "correct" and (has_findings or repair_hints):
+        raise ValueError("correct verdict requires no findings and empty repair_hints")
+    if verdict == "wrong" and not repair_hints.strip():
+        raise ValueError("wrong verdict requires non-empty repair_hints")

@@ -10,6 +10,7 @@ import urllib.request
 from typing import Optional
 
 from .config import load_config
+from .agent_loop import run_native_generation
 from .problems import normalize_problem
 from .references import prepare_references
 from .runtime import backend_for, build_plan, build_request, missing_runtime_dependencies
@@ -203,12 +204,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.dry_run:
         return 0
 
-    if plan.provider_kind != "codex-cli" and args.role == "generation" and not args.allow_incomplete_backend:
-        print(
-            "error: non-Codex generation backends do not yet implement the full Rethlas tool loop. "
-            "Use --allow-incomplete-backend only for plain model-call experiments."
+    if plan.provider_kind != "codex-cli" and args.role == "generation":
+        result = run_native_generation(
+            config,
+            problem,
+            refs,
+            request,
+            stream=not args.no_live_log,
         )
-        return 2
+        print(result.message)
+        print(f"draft: {result.draft_path}")
+        if result.verified_path.exists():
+            print(f"verified: {result.verified_path}")
+        return result.returncode
 
     backend = backend_for(request.provider)
     try:

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local environment files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Rethlas runtime artifacts
+agents/generation/downloads/
+agents/generation/logs/
+agents/generation/memory/
+agents/generation/results/
+agents/verification/memory/
+agents/verification/results/
+
+# Extracted reference caches
+agents/generation/data/**/*.refs/.extracted/
+
+# Site build output
+agents/generation/site/public/
+agents/generation/site/resources/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

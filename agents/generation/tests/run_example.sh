@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROBLEM_FILE="${PROBLEM_FILE:-data/example.md}"
-MODEL="${MODEL:-gpt-5.4}"
+MODEL="${MODEL:-gpt-5.5}"
 REASONING_EFFORT="${REASONING_EFFORT:-xhigh}"
 
 if [[ "$PROBLEM_FILE" = /* ]]; then

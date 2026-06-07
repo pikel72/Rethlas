@@ -66,6 +66,20 @@ pip install -r mcp/requirements.txt
 ./tests/run_example.sh
 ```
 
+On Windows PowerShell, use the included PowerShell wrappers instead:
+
+```powershell
+cd agents/verification
+.\start_server.ps1
+```
+
+Then, in a second PowerShell terminal:
+
+```powershell
+cd agents/generation
+.\tests\run_example.ps1
+```
+
 This script:
 
 - reads `agents/generation/data/example.md`
@@ -91,10 +105,23 @@ source .venv/bin/activate
 PROBLEM_FILE=data/my_problem.md ./tests/run_example.sh
 ```
 
+On Windows PowerShell:
+
+```powershell
+cd agents/generation
+.\tests\run_example.ps1 -ProblemFile data/my_problem.md
+```
+
 You can group problems in subdirectories under `data/` and the generated artifacts preserve that structure. For example:
 
 ```bash
 PROBLEM_FILE=data/modrep/modrep.md ./tests/run_example.sh
+```
+
+PowerShell equivalent:
+
+```powershell
+.\tests\run_example.ps1 -ProblemFile data/modrep/modrep.md
 ```
 
 To attach user-provided references to a problem, create a sibling reference directory with the same stem:

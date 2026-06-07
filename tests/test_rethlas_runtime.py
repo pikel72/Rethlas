@@ -19,11 +19,22 @@ def test_problem_normalization_short_id():
     assert problem.problem_id == "ns/ns"
 
 
-def test_runtime_config_has_multi_model_profiles():
+def test_runtime_config_has_multi_model_profiles(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
     config = load_config()
-    assert config.models["openai-default"].provider == "litellm"
-    assert config.models["anthropic-default"].provider == "litellm"
+    # toml-only profiles: codex + mock
     assert config.models["mock-verification-correct"].provider == "mock"
+    assert "gpt-5.5" in config.models
+    assert "codex-fast" in config.models
+    assert "codex-deep" in config.models
+    # env presets: resolved through the new BUILTIN_PRESETS path
+    openai = config.resolve_model("openai")
+    assert openai.provider == "litellm"
+    assert openai.compat == "openai"
+    claude = config.resolve_model("claude")
+    assert claude.provider == "litellm"
+    assert claude.compat == "anthropic"
 
 
 def test_verification_json_validation():

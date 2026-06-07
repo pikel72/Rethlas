@@ -31,6 +31,13 @@ class ModelConfig:
     model: str
     reasoning_effort: Optional[str] = None
     api_key_env: Optional[str] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    thinking_budget_tokens: Optional[int] = None
+    supports_tools: bool = False
+    supports_streaming: bool = False
+    context_window: Optional[int] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -131,13 +138,32 @@ def load_config(repo_root: Optional[Path] = None) -> RethlasConfig:
     models: Dict[str, ModelConfig] = {}
     for name, model_raw in _as_dict(raw.get("models"), "models").items():
         model_table = _as_dict(model_raw, f"models.{name}")
-        known = {"provider", "model", "reasoning_effort", "api_key_env"}
+        known = {
+            "provider",
+            "model",
+            "reasoning_effort",
+            "api_key_env",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "thinking_budget_tokens",
+            "supports_tools",
+            "supports_streaming",
+            "context_window",
+        }
         models[name] = ModelConfig(
             name=name,
             provider=str(model_table["provider"]),
             model=str(model_table.get("model", name)),
             reasoning_effort=model_table.get("reasoning_effort"),
             api_key_env=model_table.get("api_key_env"),
+            max_tokens=_optional_int(model_table.get("max_tokens")),
+            temperature=_optional_float(model_table.get("temperature")),
+            top_p=_optional_float(model_table.get("top_p")),
+            thinking_budget_tokens=_optional_int(model_table.get("thinking_budget_tokens")),
+            supports_tools=bool(model_table.get("supports_tools", False)),
+            supports_streaming=bool(model_table.get("supports_streaming", False)),
+            context_window=_optional_int(model_table.get("context_window")),
             extra={key: value for key, value in model_table.items() if key not in known},
         )
 
@@ -161,3 +187,15 @@ def load_config(repo_root: Optional[Path] = None) -> RethlasConfig:
         verification=verification,
         paths=paths,
     )
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    return float(value)

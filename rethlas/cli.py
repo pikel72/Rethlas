@@ -86,6 +86,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         provider = config.providers.get(model.provider)
         provider_kind = provider.kind if provider else "<missing>"
         print(f"  {model.name}: {model.model} via {model.provider} ({provider_kind})")
+        if args.verbose:
+            print(
+                "    "
+                f"tools={model.supports_tools} streaming={model.supports_streaming} "
+                f"max_tokens={model.max_tokens} temperature={model.temperature} "
+                f"context_window={model.context_window}"
+            )
     print("")
     print("providers:")
     for provider in config.providers.values():
@@ -293,6 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Print runtime configuration")
     doctor.add_argument("--tools", action="store_true", help="List generation tool registry")
+    doctor.add_argument("--verbose", action="store_true", help="Print model capability details")
     doctor.set_defaults(func=cmd_doctor)
 
     setup = subparsers.add_parser("setup", help="Create venvs and install dependencies")

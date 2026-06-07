@@ -244,6 +244,7 @@ class LiteLLMBackend(RuntimeBackend):
             model=request.model.model,
             messages=[{"role": "user", "content": prompt}],
             timeout=request.timeout_seconds,
+            **_litellm_options(request.model),
         )
         content = response.choices[0].message.content or ""
         log_text = (
@@ -406,6 +407,19 @@ def _extract_run_id(prompt: str) -> str:
     if match:
         return match.group(1)
     return "mock_run"
+
+
+def _litellm_options(model: ModelConfig) -> Dict[str, Any]:
+    options: Dict[str, Any] = {}
+    if model.max_tokens is not None:
+        options["max_tokens"] = model.max_tokens
+    if model.temperature is not None:
+        options["temperature"] = model.temperature
+    if model.top_p is not None:
+        options["top_p"] = model.top_p
+    if model.reasoning_effort is not None:
+        options["reasoning_effort"] = model.reasoning_effort
+    return options
 
 
 def _verification_json_prompt(prompt: str) -> str:

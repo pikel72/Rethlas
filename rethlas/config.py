@@ -31,6 +31,8 @@ class ModelConfig:
     model: str
     reasoning_effort: Optional[str] = None
     api_key_env: Optional[str] = None
+    api_base: Optional[str] = None
+    compat: Optional[str] = None
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None

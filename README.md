@@ -81,6 +81,7 @@ python -m rethlas.cli run ns/ns --dry-run
 python -m rethlas.cli status ns/ns
 python -m rethlas.cli plan --role generation --problem ns/ns
 python -m rethlas.cli plan --role verification --model anthropic-default
+python -m rethlas.cli plan --role verification --model mock-verification-correct
 ```
 
 On Windows, the scriptable wrapper is:

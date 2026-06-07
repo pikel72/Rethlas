@@ -9,6 +9,9 @@ command = "codex"
 [providers.litellm]
 kind = "litellm"
 
+[providers.mock]
+kind = "mock"
+
 [providers.openai]
 kind = "openai-compatible"
 base_url = "https://api.openai.com/v1"
@@ -43,6 +46,26 @@ reasoning_effort = "xhigh"
 [models.anthropic-native-default]
 provider = "anthropic"
 model = "claude-opus-4-5"
+
+[models.mock-generation]
+provider = "mock"
+model = "mock-generation"
+mode = "generation"
+
+[models.mock-verification-correct]
+provider = "mock"
+model = "mock-verification-correct"
+mode = "verification-correct"
+
+[models.mock-verification-wrong]
+provider = "mock"
+model = "mock-verification-wrong"
+mode = "verification-wrong"
+
+[models.mock-verification-malformed]
+provider = "mock"
+model = "mock-verification-malformed"
+mode = "verification-malformed"
 
 [verification]
 host = "127.0.0.1"

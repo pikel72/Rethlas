@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import shlex
 import shutil
 import subprocess
 from importlib.util import find_spec
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import ModelConfig, ProviderConfig, RethlasConfig
 
@@ -21,6 +24,18 @@ class RuntimeRequest:
     model: ModelConfig
     provider: ProviderConfig
     timeout_seconds: Optional[int]
+
+
+@dataclass(frozen=True)
+class RuntimeResult:
+    returncode: int
+    started_at: str
+    ended_at: str
+    log_path: Path
+    output_text: str = ""
+    usage: Optional[Dict[str, Any]] = None
+    provider_metadata: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -50,7 +65,7 @@ class RuntimeBackend:
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
         raise NotImplementedError
 
-    def run(self, request: RuntimeRequest, *, stream: bool = True) -> int:
+    def run(self, request: RuntimeRequest, *, stream: bool = True) -> RuntimeResult:
         raise NotImplementedError
 
 
@@ -87,23 +102,52 @@ class CodexCliBackend(RuntimeBackend):
             implemented=True,
         )
 
-    def run(self, request: RuntimeRequest, *, stream: bool = True) -> int:
+    def run(self, request: RuntimeRequest, *, stream: bool = True) -> RuntimeResult:
         request.log_path.parent.mkdir(parents=True, exist_ok=True)
         command = self._command(request)
+        started_at = _utc_now()
         with request.log_path.open("w", encoding="utf-8") as log_handle:
+            log_handle.write(f"started_at_utc: {started_at}\n")
+            log_handle.write(f"provider: {request.provider.name} ({request.provider.kind})\n")
+            log_handle.write(f"model_profile: {request.model.name}\n")
+            log_handle.write(f"model: {request.model.model}\n")
+            log_handle.write(f"command: {shlex.join(command)}\n\n")
+            log_handle.flush()
             if stream:
-                process = subprocess.Popen(
-                    command,
-                    cwd=request.cwd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-                assert process.stdout is not None
-                for line in process.stdout:
-                    print(line, end="")
-                    log_handle.write(line)
-                return process.wait(timeout=request.timeout_seconds)
+                output_parts: List[str] = []
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=request.cwd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    assert process.stdout is not None
+                    for line in process.stdout:
+                        print(line, end="")
+                        log_handle.write(line)
+                        output_parts.append(line)
+                    returncode = process.wait(timeout=request.timeout_seconds)
+                    return RuntimeResult(
+                        returncode=returncode,
+                        started_at=started_at,
+                        ended_at=_utc_now(),
+                        log_path=request.log_path,
+                        output_text="".join(output_parts),
+                        provider_metadata={"command": command},
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    process.kill()
+                    return RuntimeResult(
+                        returncode=124,
+                        started_at=started_at,
+                        ended_at=_utc_now(),
+                        log_path=request.log_path,
+                        output_text="".join(output_parts),
+                        provider_metadata={"command": command},
+                        error=f"Runtime timed out after {exc.timeout} seconds",
+                    )
 
             completed = subprocess.run(
                 command,
@@ -114,7 +158,13 @@ class CodexCliBackend(RuntimeBackend):
                 timeout=request.timeout_seconds,
                 check=False,
             )
-            return completed.returncode
+            return RuntimeResult(
+                returncode=completed.returncode,
+                started_at=started_at,
+                ended_at=_utc_now(),
+                log_path=request.log_path,
+                provider_metadata={"command": command},
+            )
 
 
 class ApiCompatibleBackend(RuntimeBackend):
@@ -134,7 +184,7 @@ class ApiCompatibleBackend(RuntimeBackend):
             notes=["Native provider API runtime is planned but not implemented yet."],
         )
 
-    def run(self, request: RuntimeRequest, *, stream: bool = True) -> int:
+    def run(self, request: RuntimeRequest, *, stream: bool = True) -> RuntimeResult:
         raise NotImplementedError(
             f"Provider kind '{request.provider.kind}' is planned but not implemented yet"
         )
@@ -165,7 +215,7 @@ class LiteLLMBackend(RuntimeBackend):
             ],
         )
 
-    def run(self, request: RuntimeRequest, *, stream: bool = True) -> int:
+    def run(self, request: RuntimeRequest, *, stream: bool = True) -> RuntimeResult:
         try:
             import litellm
         except ImportError as exc:
@@ -173,6 +223,7 @@ class LiteLLMBackend(RuntimeBackend):
                 "LiteLLM backend selected, but the 'litellm' package is not installed."
             ) from exc
 
+        started_at = _utc_now()
         request.log_path.parent.mkdir(parents=True, exist_ok=True)
         response = litellm.completion(
             model=request.model.model,
@@ -183,7 +234,81 @@ class LiteLLMBackend(RuntimeBackend):
         request.log_path.write_text(content, encoding="utf-8")
         if stream:
             print(content)
-        return 0
+        usage = getattr(response, "usage", None)
+        return RuntimeResult(
+            returncode=0,
+            started_at=started_at,
+            ended_at=_utc_now(),
+            log_path=request.log_path,
+            output_text=content,
+            usage=usage if isinstance(usage, dict) else None,
+            provider_metadata={"provider": request.provider.name, "model": request.model.model},
+        )
+
+
+class MockBackend(RuntimeBackend):
+    implemented = True
+
+    def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
+        return RuntimePlan(
+            role=request.role,
+            provider_name=request.provider.name,
+            provider_kind=request.provider.kind,
+            model_profile=request.model.name,
+            model=request.model.model,
+            cwd=request.cwd,
+            log_path=request.log_path,
+            command=None,
+            api_base_url=None,
+            api_key_env=None,
+            implemented=True,
+            notes=["Mock backend writes deterministic local outputs for tests."],
+        )
+
+    def run(self, request: RuntimeRequest, *, stream: bool = True) -> RuntimeResult:
+        started_at = _utc_now()
+        request.log_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = str(request.model.extra.get("mode", "generation"))
+        output_text = f"mock runtime mode={mode}\n"
+        request.log_path.write_text(output_text, encoding="utf-8")
+
+        if request.role == "verification":
+            run_id = _extract_run_id(request.prompt)
+            payload: Any
+            if mode == "verification-wrong":
+                payload = {
+                    "verification_report": {
+                        "summary": "Mock verifier found a gap.",
+                        "critical_errors": [],
+                        "gaps": [{"location": "proof", "issue": "Mock gap for testing."}],
+                    },
+                    "verdict": "wrong",
+                    "repair_hints": "Address the mock gap.",
+                }
+            elif mode == "verification-malformed":
+                payload = {"verdict": "correct"}
+            else:
+                payload = {
+                    "verification_report": {
+                        "summary": "Mock verifier accepted the proof.",
+                        "critical_errors": [],
+                        "gaps": [],
+                    },
+                    "verdict": "correct",
+                    "repair_hints": "",
+                }
+            output_path = request.cwd / "results" / run_id / "verification.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        return RuntimeResult(
+            returncode=0,
+            started_at=started_at,
+            ended_at=_utc_now(),
+            log_path=request.log_path,
+            output_text=output_text,
+            provider_metadata={"mode": mode},
+        )
 
 
 def backend_for(provider: ProviderConfig) -> RuntimeBackend:
@@ -191,6 +316,8 @@ def backend_for(provider: ProviderConfig) -> RuntimeBackend:
         return CodexCliBackend()
     if provider.kind == "litellm":
         return LiteLLMBackend()
+    if provider.kind == "mock":
+        return MockBackend()
     if provider.kind in {"openai-compatible", "anthropic-compatible"}:
         return ApiCompatibleBackend()
     raise ValueError(f"Unsupported provider kind: {provider.kind}")
@@ -234,3 +361,14 @@ def missing_runtime_dependencies(plan: RuntimePlan) -> List[str]:
         if not os.getenv(plan.api_key_env):
             missing.append(plan.api_key_env)
     return missing
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_run_id(prompt: str) -> str:
+    match = re.search(r"Run_id:\s*([A-Za-z0-9._-]+)", prompt)
+    if match:
+        return match.group(1)
+    return "mock_run"

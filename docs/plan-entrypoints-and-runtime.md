@@ -453,6 +453,8 @@ Acceptance checks:
 - Missing LiteLLM/API key errors are reported before a long run starts.
 - Existing `agents/verification/scripts/test_verify_endpoint.py` still passes or is updated to the new runtime model selection.
 
+Implementation note: mock verification profiles should be kept available even after real provider support lands. They are the cheapest regression guard for runtime selection, JSON output validation, and API error behavior.
+
 ### Stage 4: Implement LiteLLM verification backend
 
 Goal: make verification usable through OpenAI and Anthropic via LiteLLM.

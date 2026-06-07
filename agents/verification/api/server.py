@@ -2,25 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import shlex
-import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from rethlas.config import load_config  # noqa: E402
+from rethlas.runtime import backend_for, build_plan, build_request, missing_runtime_dependencies  # noqa: E402
+
 WORK_DIR = REPO_ROOT.resolve()
 RESULTS_ROOT = WORK_DIR / "results"
 
-CODEX_BIN = os.getenv("CODEX_BIN", "codex")
-CODEX_MODEL = os.getenv("CODEX_MODEL", "gpt-5.5")
-CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "xhigh")
-CODEX_TIMEOUT_SECONDS = int(os.getenv("CODEX_TIMEOUT_SECONDS", "0")) or None
 VERIFICATION_FILENAMES = ("verification.json", "verificationt.json")
 
 
@@ -76,55 +77,65 @@ def build_prompt(run_id: str, statement: str, proof: str) -> str:
     )
 
 
-def build_codex_command(run_id: str, statement: str, proof: str) -> List[str]:
-    return [
-        CODEX_BIN,
-        "exec",
-        "-C",
-        str(WORK_DIR),
-        "-m",
-        CODEX_MODEL,
-        "--config",
-        f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
-        "--dangerously-bypass-approvals-and-sandbox",
-        build_prompt(run_id=run_id, statement=statement, proof=proof),
-    ]
+def _validate_verification_payload(payload: Dict[str, Any], path: Path) -> None:
+    report = payload.get("verification_report")
+    verdict = payload.get("verdict")
+    repair_hints = payload.get("repair_hints")
+    if not isinstance(report, dict):
+        raise HTTPException(status_code=500, detail=f"verification_report at {path} must be an object")
+    if verdict not in {"correct", "wrong"}:
+        raise HTTPException(status_code=500, detail=f"verdict at {path} must be 'correct' or 'wrong'")
+    if not isinstance(repair_hints, str):
+        raise HTTPException(status_code=500, detail=f"repair_hints at {path} must be a string")
+    for key in ("summary", "critical_errors", "gaps"):
+        if key not in report:
+            raise HTTPException(status_code=500, detail=f"verification_report.{key} is missing at {path}")
+    if not isinstance(report["summary"], str):
+        raise HTTPException(status_code=500, detail=f"verification_report.summary at {path} must be a string")
+    if not isinstance(report["critical_errors"], list) or not isinstance(report["gaps"], list):
+        raise HTTPException(status_code=500, detail=f"verification findings at {path} must be lists")
+    has_findings = bool(report["critical_errors"] or report["gaps"])
+    if verdict == "correct" and (has_findings or repair_hints):
+        raise HTTPException(
+            status_code=500,
+            detail=f"correct verdict at {path} must have no findings and empty repair_hints",
+        )
+    if verdict == "wrong" and not repair_hints.strip():
+        raise HTTPException(status_code=500, detail=f"wrong verdict at {path} requires repair_hints")
 
 
-def run_codex_verification(run_id: str, statement: str, proof: str) -> Dict[str, Any]:
+def run_runtime_verification(run_id: str, statement: str, proof: str) -> Dict[str, Any]:
     results_dir = _results_dir(run_id)
     results_dir.mkdir(parents=True, exist_ok=True)
     log_path = _log_path(run_id)
-    cmd = build_codex_command(run_id=run_id, statement=statement, proof=proof)
-
-    started_at = datetime.now(timezone.utc).isoformat()
-    try:
-        with log_path.open("w", encoding="utf-8") as log_handle:
-            log_handle.write(f"started_at_utc: {started_at}\n")
-            log_handle.write(f"command: {shlex.join(cmd)}\n\n")
-            log_handle.flush()
-
-            completed = subprocess.run(
-                cmd,
-                cwd=WORK_DIR,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=CODEX_TIMEOUT_SECONDS,
-                check=False,
-            )
-    except subprocess.TimeoutExpired as exc:
+    config = load_config(PROJECT_ROOT)
+    prompt = build_prompt(run_id=run_id, statement=statement, proof=proof)
+    request = build_request(
+        config,
+        role="verification",
+        cwd=config.paths.verification_dir,
+        prompt=prompt,
+        log_path=log_path,
+    )
+    plan = build_plan(config, request)
+    missing = missing_runtime_dependencies(plan)
+    if missing:
         raise HTTPException(
-            status_code=504,
-            detail=f"codex exec timed out after {exc.timeout} seconds. See log at {log_path}",
-        ) from exc
+            status_code=500,
+            detail=f"runtime dependencies missing for {plan.provider_name}/{plan.model_profile}: {', '.join(missing)}",
+        )
+
+    try:
+        result = backend_for(request.provider).run(request, stream=False)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"runtime execution failed: {exc}") from exc
 
     verification_path = _verification_path(run_id)
-    if completed.returncode != 0:
+    if result.returncode != 0:
         raise HTTPException(
             status_code=500,
             detail=(
-                f"codex exec failed with exit code {completed.returncode}. "
+                f"runtime {plan.provider_name}/{plan.model_profile} failed with exit code {result.returncode}. "
                 f"See log at {log_path}"
             ),
         )
@@ -152,6 +163,7 @@ def run_codex_verification(run_id: str, statement: str, proof: str) -> Dict[str,
             status_code=500,
             detail=f"verification output at {verification_path} must be a JSON object",
         )
+    _validate_verification_payload(payload, verification_path)
 
     return payload
 
@@ -167,7 +179,7 @@ def health() -> Dict[str, str]:
 @app.post("/verify")
 def verify(request: VerifyRequest) -> Dict[str, Any]:
     run_id = _allocate_run_id(request.statement)
-    return run_codex_verification(
+    return run_runtime_verification(
         run_id=run_id,
         statement=request.statement,
         proof=request.proof,

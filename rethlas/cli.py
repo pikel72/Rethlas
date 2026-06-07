@@ -90,6 +90,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  {provider.name}: {provider.kind}, command={provider.command or 'codex'}")
         elif provider.kind == "litellm":
             print(f"  {provider.name}: {provider.kind}, package=litellm")
+        elif provider.kind == "mock":
+            print(f"  {provider.name}: {provider.kind}")
         else:
             print(
                 f"  {provider.name}: {provider.kind}, "
@@ -203,7 +205,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     backend = backend_for(request.provider)
     try:
-        return backend.run(request, stream=not args.no_live_log)
+        result = backend.run(request, stream=not args.no_live_log)
+        if result.error:
+            print(f"runtime error: {result.error}")
+        return result.returncode
     except Exception as exc:
         print(f"runtime failed: {exc}")
         return 1

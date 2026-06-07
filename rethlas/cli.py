@@ -14,6 +14,7 @@ from .problems import normalize_problem
 from .references import prepare_references
 from .runtime import backend_for, build_plan, build_request, missing_runtime_dependencies
 from .status import inspect_problem_status
+from .tools import build_generation_tool_registry
 
 
 def build_generation_prompt(problem_path: str, problem_id: str, reference_prompt: str) -> str:
@@ -103,6 +104,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  verification: {config.paths.verification_dir}")
     print("")
     print(f"verifier reachable: {str(verifier_health(config.verification.base_url)).lower()}")
+    if args.tools:
+        registry = build_generation_tool_registry(config)
+        print("")
+        print("generation tools:")
+        for name in registry.names:
+            print(f"  {name}")
     return 0
 
 
@@ -263,6 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser("doctor", help="Print runtime configuration")
+    doctor.add_argument("--tools", action="store_true", help="List generation tool registry")
     doctor.set_defaults(func=cmd_doctor)
 
     setup = subparsers.add_parser("setup", help="Create venvs and install dependencies")

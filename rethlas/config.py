@@ -12,6 +12,9 @@ else:  # pragma: no cover - Python 3.10 fallback
     tomllib = None  # type: ignore[assignment]
 
 
+from .presets import BUILTIN_PRESETS, base_url_env_name
+
+
 CONFIG_FILENAME = "rethlas.toml"
 
 
@@ -72,6 +75,62 @@ class PathsConfig:
     verification_dir: Path
 
 
+def _resolve_env_preset(name: str) -> ModelConfig:
+    """Resolve a built-in env preset name to a ModelConfig, reading .env credentials."""
+    if name not in BUILTIN_PRESETS:
+        available = sorted(BUILTIN_PRESETS)
+        raise ValueError(
+            f"Unknown env preset {name!r}. Built-in presets: {', '.join(available)}"
+        )
+    preset = BUILTIN_PRESETS[name]
+
+    api_key = os.getenv(preset.key_env)
+    if not preset.key_optional and not api_key:
+        raise ValueError(
+            f"Preset {name!r} requires {preset.key_env} to be set. "
+            f"Add it to .env or your shell, or unset RETHLAS_MODEL to use the default."
+        )
+
+    if name == "custom":
+        base_url = os.getenv("CUSTOM_API_BASE")
+        compat = os.getenv("CUSTOM_COMPAT", "").strip().lower()
+        missing = []
+        if not base_url:
+            missing.append("CUSTOM_API_BASE")
+        if compat not in {"openai", "anthropic"}:
+            missing.append("CUSTOM_COMPAT (openai|anthropic)")
+        if missing:
+            raise ValueError(
+                f"Preset 'custom' requires the following env var(s) to be set: "
+                f"{', '.join(missing)}."
+            )
+    else:
+        # Allow two env var forms for the base URL override:
+        #   1. The formal <KEY_ENV>_BASE form (per base_url_env_name) — used by
+        #      presets that set base_url_env_override.
+        #   2. The user-friendly <VENDOR>_API_BASE form (e.g. DEEPSEEK_API_BASE),
+        #      matching the .env.example template.
+        base_url_env = base_url_env_name(preset)
+        vendor_base_env = preset.key_env.replace("_API_KEY", "_API_BASE")
+        base_url = (
+            os.getenv(base_url_env)
+            or os.getenv(vendor_base_env)
+            or preset.base_url
+        )
+        compat = preset.compat
+
+    model_name = os.getenv(preset.model_env_override) or preset.default_model
+
+    return ModelConfig(
+        name=name,
+        provider="litellm",
+        model=model_name,
+        api_key_env=preset.key_env,
+        api_base=base_url,
+        compat=compat,
+    )
+
+
 @dataclass(frozen=True)
 class RethlasConfig:
     repo_root: Path
@@ -84,11 +143,22 @@ class RethlasConfig:
 
     def resolve_model(self, requested_model: Optional[str] = None) -> ModelConfig:
         model_name = requested_model or os.getenv("RETHLAS_MODEL") or self.runtime.default_model
-        try:
+        # 1. toml-registered profiles: codex, mock-*, and any remaining user-defined
+        if model_name in self.models:
             return self.models[model_name]
-        except KeyError as exc:
-            available = ", ".join(sorted(self.models))
-            raise ValueError(f"Unknown model profile '{model_name}'. Available models: {available}") from exc
+        # 2. env presets: built-in table
+        if model_name in BUILTIN_PRESETS:
+            return _resolve_env_preset(model_name)
+        # 2.5 alias: "codex" → toml's gpt-5.5
+        if model_name == "codex" and "gpt-5.5" in self.models:
+            return self.models["gpt-5.5"]
+        # 3. unknown name → helpful error
+        toml_names = sorted(self.models)
+        env_names = sorted(BUILTIN_PRESETS)
+        raise ValueError(
+            f"Unknown model profile {model_name!r}. "
+            f"Available: toml=[{', '.join(toml_names)}], env_presets=[{', '.join(env_names)}]"
+        )
 
     def resolve_provider(self, model: ModelConfig) -> ProviderConfig:
         try:

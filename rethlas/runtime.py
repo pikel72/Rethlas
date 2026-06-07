@@ -202,6 +202,7 @@ class LiteLLMBackend(RuntimeBackend):
             notes.append("Verification JSON extraction and writing is implemented.")
         else:
             notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
+        api_base_url = request.model.api_base or request.provider.base_url
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,
@@ -211,7 +212,7 @@ class LiteLLMBackend(RuntimeBackend):
             cwd=request.cwd,
             log_path=request.log_path,
             command=None,
-            api_base_url=request.provider.base_url,
+            api_base_url=api_base_url,
             api_key_env=self._api_key_env(request),
             implemented=True,
             notes=notes,
@@ -230,12 +231,25 @@ class LiteLLMBackend(RuntimeBackend):
         prompt = request.prompt
         if request.role == "verification":
             prompt = _verification_json_prompt(request.prompt)
-        response = litellm.completion(
-            model=request.model.model,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=request.timeout_seconds,
-            **_litellm_options(request.model),
-        )
+
+        completion_kwargs: Dict[str, Any] = {
+            "model": request.model.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "timeout": request.timeout_seconds,
+        }
+        api_key_env = self._api_key_env(request)
+        if api_key_env:
+            api_key = os.getenv(api_key_env)
+            if api_key:
+                completion_kwargs["api_key"] = api_key
+        api_base = request.model.api_base or request.provider.base_url
+        if api_base:
+            completion_kwargs["api_base"] = api_base
+        if request.model.compat:
+            completion_kwargs["custom_llm_provider"] = request.model.compat
+        completion_kwargs.update(_litellm_options(request.model))
+
+        response = litellm.completion(**completion_kwargs)
         content = response.choices[0].message.content or ""
         log_text = (
             f"started_at_utc: {started_at}\n"

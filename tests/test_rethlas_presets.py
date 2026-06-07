@@ -201,3 +201,21 @@ def test_rethlas_verification_model_env_independent(fresh_env):
     ver = config.resolve_model(os.getenv("RETHLAS_VERIFICATION_MODEL"))
     assert gen.name == "deepseek-1"
     assert ver.name == "claude"
+
+
+def test_build_plan_uses_model_api_base_when_set(fresh_env, tmp_path):
+    from rethlas.runtime import build_request, build_plan
+
+    fresh_env.setenv("DEEPSEEK_API_KEY", "sk-x")
+    config = load_config()
+    request = build_request(
+        config,
+        role="generation",
+        cwd=tmp_path,
+        prompt="hello",
+        log_path=tmp_path / "log.txt",
+        model_name="deepseek-1",
+    )
+    plan = build_plan(config, request)
+    assert plan.api_base_url == "https://api.deepseek.com/v1"
+    assert plan.api_key_env == "DEEPSEEK_API_KEY"

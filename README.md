@@ -1,247 +1,396 @@
 # Rethlas
 
-Rethlas is a natural-language reasoning system for mathematics built around generation and verification agents:
+Rethlas is a natural-language reasoning system for mathematics. It has two main agents:
 
-- The generation agent reads a math problem from a markdown file and writes an informal proof blueprint.
-- The verification agent checks that proof blueprint, produces a structured verdict, and serves as the generation agent's verifier.
+- the generation agent, which reads a markdown problem and writes a proof blueprint
+- the verification agent, which checks a proof blueprint and writes a structured verdict
 
-The default backend remains Codex CLI, but the repository now has a runtime layer for Codex CLI, LiteLLM-backed OpenAI/Anthropic models, and deterministic mock profiles.
+The default runtime is still Codex CLI. The repository also includes a runtime layer for LiteLLM-backed OpenAI/Anthropic models and deterministic mock models for local tests.
 
-The intended deployment order is:
+## Quick Start
 
-1. Start the verification agent as a local HTTP service.
-2. Run the generation agent through the selected runtime backend.
-3. Let the generation agent call the verification service during its proof-and-repair loop.
-
-## Repository Layout
-
-- `agents/generation`: the proof-generation agent
-- `agents/verification`: the proof-verification agent
-- `rethlas.bat`: Windows launcher menu, suitable for double-click use
-- `rethlas.sh`: Linux/macOS launcher menu
-- `rethlas.toml`: runtime, provider, and model profile configuration
-- `rethlas/`: shared Python helpers for runtime planning and problem path handling
-
-In particular, 
-- Original problems are put in `agents/generation/data/`, e.g. unclassified problem `agents/generation/data/example.md`, or classfied problem `agents/generation/data/modrep/modrep.md`, `agents/generation/data/example/example1.md`.
-- Zola project to render the results in a static website is in `agents/generation/site/`.
-
-## 1. Install Runtime Dependencies
-
-For the default Codex backend, install the Codex CLI:
-
-```bash
-npm install -g @openai/codex
-```
-
-
-## 2. Clone the Repository
+Clone the repository:
 
 ```bash
 git clone https://github.com/frenzymath/Rethlas.git
 cd Rethlas
 ```
 
-## 3. Quick Start
+Install Python dependencies:
 
-On Windows, double-click `rethlas.bat` from File Explorer, or run it from PowerShell or Command Prompt:
-
-```powershell
-.\rethlas.bat
+```bash
+python -m pip install -r requirements.txt
 ```
 
-The launcher menu can:
+For the default Codex model profile, install Codex CLI:
 
-- run a quick doctor check
-- start the verification service in a separate PowerShell window
-- run the included example
-- run a problem by id, such as `example`, `ns/ns`, or `data/modrep/modrep.md`
-- dry-run a problem before starting a long agent run
+```bash
+npm install -g @openai/codex
+```
 
-On Linux or macOS:
+Check the installation:
+
+```bash
+python -m rethlas.cli doctor --tools --verbose
+```
+
+On Windows, you can also double-click:
+
+```text
+rethlas.bat
+```
+
+Or use the PowerShell wrapper:
+
+```powershell
+.\rethlas.ps1 doctor
+```
+
+On Linux/macOS:
 
 ```bash
 chmod +x ./rethlas.sh
 ./rethlas.sh
 ```
 
-The shell launcher provides the same basic menu. The current launchers still use the existing Codex-based agents internally, but they remove the need to remember the `agents/generation` and `agents/verification` working directories.
-The shell launcher provides the same basic menu. The default model profile still uses Codex, but `rethlas.toml` can select LiteLLM-backed OpenAI/Anthropic profiles.
+## Running A Problem
 
-Runtime providers and model profiles are configured in `rethlas.toml`. Implemented runtime kinds include `codex-cli`, `litellm`, and `mock`; native `openai-compatible` and `anthropic-compatible` provider formats are represented for future direct API backends.
+Problems live under `agents/generation/data/`.
 
-LiteLLM is the planned shared model-call layer for OpenAI and Anthropic models. Install root runtime dependencies with:
+Examples:
 
-```bash
-pip install -r requirements.txt
+```text
+agents/generation/data/example.md
+agents/generation/data/ns/ns.md
+agents/generation/data/modrep/modrep.md
 ```
 
-LiteLLM verification can write normalized `verification.json`. LiteLLM generation has a native tool loop and writes `blueprint.md`; it performs one verifier pass when the verification service is reachable.
+Dry-run a problem before starting a long run:
 
-To inspect the effective runtime plan:
-
-```powershell
-python -m rethlas.cli doctor
+```bash
 python -m rethlas.cli run ns/ns --dry-run
-python -m rethlas.cli status ns/ns
-python -m rethlas.cli plan --role generation --problem ns/ns
-python -m rethlas.cli plan --role verification --model anthropic-default
-python -m rethlas.cli plan --role verification --model mock-verification-correct
 ```
 
-On Windows, the scriptable wrapper is:
+Run it:
+
+```bash
+python -m rethlas.cli run ns/ns
+```
+
+Windows wrapper equivalent:
 
 ```powershell
-.\rethlas.ps1 doctor
-.\rethlas.ps1 setup --dry-run
-.\rethlas.ps1 verify-server --dry-run
 .\rethlas.ps1 run ns/ns --dry-run
-.\rethlas.ps1 status ns/ns
+.\rethlas.ps1 run ns/ns
 ```
 
-## 4. Manual Verification Service
-
+Problem names are normalized automatically. These are equivalent:
 
 ```bash
-cd agents/verification
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn api.server:app --host 0.0.0.0 --port 8091
+python -m rethlas.cli run ns/ns
+python -m rethlas.cli run ns/ns.md
+python -m rethlas.cli run data/ns/ns.md
 ```
 
-Using uv
-```bash
-cd agents/verification
-uv venv 
-uv pip install -r requirements.txt
-uv run uvicorn api.server:app --host 0.0.0.0 --port 8091
-```
-
-On Windows PowerShell:
-
-```powershell
-cd agents/verification
-.\start_server.ps1
-```
-
-## 5. Manual Generation Run
-
-
-```bash
-cd agents/generation
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r mcp/requirements.txt
-./tests/run_example.sh
-```
-
-On Windows PowerShell:
-
-```powershell
-cd agents/generation
-.\tests\run_example.ps1
-```
-
-This script:
-
-- reads `agents/generation/data/example.md`
-- runs `codex exec` inside `agents/generation`
-- writes the run log to `agents/generation/logs/example/example.md`
-- writes memory artifacts to `agents/generation/memory/example/`
-- writes the draft proof to `agents/generation/results/example/blueprint.md`
-- writes the verified proof to `agents/generation/results/example/blueprint_verified.md` if verification succeeds
-
-## 6. Run Your Own Problem
-
-Put your problem in a markdown file under `agents/generation/data/`. Save that as:
+Outputs are written under:
 
 ```text
-agents/generation/data/my_problem.md
+agents/generation/logs/{problem_id}/
+agents/generation/memory/{problem_id}/
+agents/generation/results/{problem_id}/
 ```
 
-Then run:
+Check status:
 
 ```bash
-cd agents/generation
-source .venv/bin/activate
-PROBLEM_FILE=data/my_problem.md ./tests/run_example.sh
+python -m rethlas.cli status ns/ns
 ```
 
-On Windows PowerShell:
+## Starting The Verification Service
 
-```powershell
-cd agents/generation
-.\tests\run_example.ps1 -ProblemFile data/my_problem.md
-```
+The generation agent calls the verification agent over HTTP.
 
-You can group problems in subdirectories under `data/` and the generated artifacts preserve that structure. For example:
+Start it from the repository root:
 
 ```bash
-PROBLEM_FILE=data/modrep/modrep.md ./tests/run_example.sh
+python -m rethlas.cli verify-server
 ```
 
-PowerShell equivalent:
+Windows wrapper:
 
 ```powershell
-.\tests\run_example.ps1 -ProblemFile data/modrep/modrep.md
+.\rethlas.ps1 verify-server
 ```
 
-Launcher equivalent from the repository root:
+Dry-run the server command:
 
-```text
-Open rethlas.bat or ./rethlas.sh, choose "Run a problem", then enter modrep/modrep.
+```bash
+python -m rethlas.cli verify-server --dry-run
 ```
 
-To attach user-provided references to a problem, create a sibling reference directory with the same stem:
+The default verification URL is configured in `rethlas.toml`:
+
+```toml
+[verification]
+host = "127.0.0.1"
+port = 8091
+```
+
+## Custom Model Configuration
+
+Models are configured in `rethlas.toml`.
+
+There are three concepts:
+
+- **provider**: how the model is called, such as `codex-cli`, `litellm`, or `mock`
+- **model profile**: a named model configuration used by `--model`
+- **default model**: the profile used when `--model` is omitted
+
+The default is:
+
+```toml
+[runtime]
+default_model = "gpt-5.5"
+timeout_seconds = 3600
+```
+
+### Codex CLI Model
+
+The default profile uses Codex CLI:
+
+```toml
+[providers.codex]
+kind = "codex-cli"
+command = "codex"
+
+[models."gpt-5.5"]
+provider = "codex"
+model = "gpt-5.5"
+reasoning_effort = "xhigh"
+supports_tools = true
+supports_streaming = true
+```
+
+Use it explicitly:
+
+```bash
+python -m rethlas.cli run ns/ns --model gpt-5.5
+```
+
+### OpenAI Through LiteLLM
+
+Set your API key:
+
+```bash
+export OPENAI_API_KEY="..."
+```
+
+PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY = "..."
+```
+
+Example profile:
+
+```toml
+[providers.litellm]
+kind = "litellm"
+
+[models.openai-default]
+provider = "litellm"
+model = "openai/gpt-5.5"
+reasoning_effort = "xhigh"
+api_key_env = "OPENAI_API_KEY"
+supports_tools = true
+supports_streaming = true
+```
+
+Inspect the plan:
+
+```bash
+python -m rethlas.cli plan --role generation --problem ns/ns --model openai-default
+python -m rethlas.cli plan --role verification --model openai-default
+```
+
+Run generation with that profile:
+
+```bash
+python -m rethlas.cli run ns/ns --model openai-default
+```
+
+### Anthropic Through LiteLLM
+
+Set your API key:
+
+```bash
+export ANTHROPIC_API_KEY="..."
+```
+
+PowerShell:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "..."
+```
+
+Example profile:
+
+```toml
+[models.anthropic-default]
+provider = "litellm"
+model = "anthropic/claude-opus-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+supports_tools = true
+supports_streaming = true
+```
+
+Use it:
+
+```bash
+python -m rethlas.cli run ns/ns --model anthropic-default
+```
+
+### Add Your Own Model Profile
+
+Add a new table under `[models.<name>]`.
+
+For an OpenAI-compatible LiteLLM model:
+
+```toml
+[models.my-openai-model]
+provider = "litellm"
+model = "openai/gpt-5.5"
+api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "xhigh"
+supports_tools = true
+supports_streaming = true
+max_tokens = 8000
+temperature = 0.2
+```
+
+For an Anthropic model:
+
+```toml
+[models.my-claude-model]
+provider = "litellm"
+model = "anthropic/claude-opus-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+supports_tools = true
+supports_streaming = true
+max_tokens = 8000
+temperature = 0.2
+```
+
+Make it the default:
+
+```toml
+[runtime]
+default_model = "my-openai-model"
+timeout_seconds = 3600
+```
+
+Or keep the default unchanged and pass it per run:
+
+```bash
+python -m rethlas.cli run ns/ns --model my-openai-model
+```
+
+Always check a custom model before running:
+
+```bash
+python -m rethlas.cli doctor --verbose
+python -m rethlas.cli plan --role generation --problem ns/ns --model my-openai-model
+python -m rethlas.cli plan --role verification --model my-openai-model
+```
+
+If an API key or package is missing, `plan` prints it before a long run starts.
+
+### Mock Models
+
+Mock profiles require no Codex, LiteLLM, or API key. They are useful for checking local wiring:
+
+```bash
+python -m rethlas.cli run example --model mock-generation
+python -m rethlas.cli plan --role verification --model mock-verification-correct
+pytest -q tests/test_rethlas_runtime.py
+```
+
+## Runtime Behavior
+
+Implemented runtime kinds:
+
+- `codex-cli`: runs `codex exec`; this remains the most complete path
+- `litellm`: calls OpenAI/Anthropic-style models through LiteLLM
+- `mock`: deterministic local backend for tests
+
+Current behavior:
+
+- Codex generation keeps the original full agent behavior.
+- Verification API now uses the shared runtime layer.
+- LiteLLM verification extracts model JSON, validates it, and writes `verification.json`.
+- LiteLLM generation has a native tool-call loop, writes `blueprint.md`, and performs one verifier pass when the verification service is reachable.
+- Native OpenAI/Anthropic provider kinds are placeholders for future direct API implementations; use `provider = "litellm"` today.
+
+## References
+
+To attach local references to a problem, create a sibling `.refs` directory:
 
 ```text
+agents/generation/data/modrep/modrep.md
 agents/generation/data/modrep/modrep.refs/
 ```
 
-When that directory exists, the generation agent reads its files before using external search.
-Reference files may be markdown, LaTeX, plain text, or PDF, but markdown, LaTeX and plain text is prefered over PDF. Actually, PDFs are converted to extracted text under `.extracted/` before the agent runs.
+Supported reference files include `.md`, `.tex`, `.txt`, and `.pdf`.
+PDF references are extracted to `.extracted/` when `pdftotext` is installed.
 
-## 7. View Results in the Browser
-
-- `agents/generation/site`: Zola site for browsing results in the browser
-
-Results are markdown files with LaTeX math. To render them properly, a local [Zola](https://www.getzola.org/) site using the [MATbook](https://www.getzola.org/themes/matbook/) theme is included.
-
-### Prerequisites
-
-Install Zola.
-
-Zola can be easily installed using your package manager in terminal. For example, on Mac, you simply run
+## Useful Commands
 
 ```bash
-brew install zola
+python -m rethlas.cli doctor --tools --verbose
+python -m rethlas.cli setup --dry-run
+python -m rethlas.cli verify-server --dry-run
+python -m rethlas.cli run example --dry-run
+python -m rethlas.cli run example
+python -m rethlas.cli status example
+python -m rethlas.cli subagent-check
 ```
 
-and on ArchLinux, run
+Legacy generation scripts still work, but they delegate to the root CLI:
 
 ```bash
-sudo pacman -S zola
+agents/generation/tests/run_example.sh
 ```
 
-For other operating systems, please see [Zola installation](https://www.getzola.org/documentation/getting-started/installation/).
+```powershell
+.\agents\generation\tests\run_example.ps1 -ProblemFile ns/ns -DryRun
+```
 
-### Serve
+## Viewing Results In A Browser
 
-From `agents/generation/`:
+`agents/generation/site` contains a Zola site for browsing markdown results with LaTeX math.
+
+Install Zola, then from `agents/generation/`:
 
 ```bash
 ./site/serve.sh
 ```
 
-On first run this automatically clones the [MATbook](https://www.getzola.org/themes/matbook/) theme. Then it syncs all results from `results/` into the site and starts a local server. Open http://localhost:3264 in your browser.
+Open:
 
-Each problem  in `agents/generation/data/your_category`  will be a section in a chapter called `your_category`, while problems directly in `agents/generation/data` will be under `unclassified` chapter.
-
-### Update the MATbook Theme
-
-```bash
-./site/setup_theme.sh
+```text
+http://localhost:3264
 ```
 
-This pulls the latest version from the [MATbook repository](https://github.com/srliu3264/MATbook).
+## Repository Layout
+
+```text
+agents/generation/       generation agent instructions, tools, data, logs, memory, results
+agents/verification/     verification agent API, tools, schemas, results
+rethlas/                 shared CLI/runtime/problem/status/tool helpers
+rethlas.toml             provider and model profile configuration
+rethlas.bat              Windows double-click launcher
+rethlas.ps1              Windows scriptable wrapper
+rethlas.sh               Linux/macOS menu launcher
+tests/                   runtime regression tests
+docs/legacy/             older analysis documents
+```

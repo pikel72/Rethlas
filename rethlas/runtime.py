@@ -196,13 +196,16 @@ class LiteLLMBackend(RuntimeBackend):
     def _api_key_env(self, request: RuntimeRequest) -> Optional[str]:
         return request.model.api_key_env or request.provider.api_key_env
 
+    def _api_base_url(self, request: RuntimeRequest) -> Optional[str]:
+        return request.model.api_base or request.provider.base_url
+
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
         notes = ["LiteLLM backend supports plain model calls."]
         if request.role == "verification":
             notes.append("Verification JSON extraction and writing is implemented.")
         else:
             notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
-        api_base_url = request.model.api_base or request.provider.base_url
+        api_base_url = self._api_base_url(request)
         return RuntimePlan(
             role=request.role,
             provider_name=request.provider.name,
@@ -242,7 +245,7 @@ class LiteLLMBackend(RuntimeBackend):
             api_key = os.getenv(api_key_env)
             if api_key:
                 completion_kwargs["api_key"] = api_key
-        api_base = request.model.api_base or request.provider.base_url
+        api_base = self._api_base_url(request)
         if api_base:
             completion_kwargs["api_base"] = api_base
         if request.model.compat:

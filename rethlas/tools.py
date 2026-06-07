@@ -57,6 +57,19 @@ class ToolRegistry:
             return ToolCallResult(name=name, arguments={}, ok=False, error="Tool arguments must be a JSON object")
         return self.call(name, loaded)
 
+    def schemas(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": _TOOL_DESCRIPTIONS.get(name, f"Rethlas tool {name}"),
+                    "parameters": _TOOL_PARAMETERS.get(name, {"type": "object", "properties": {}}),
+                },
+            }
+            for name in self.names
+        ]
+
 
 def build_generation_tool_registry(config: RethlasConfig) -> ToolRegistry:
     module = _load_module(config.paths.generation_dir / "mcp" / "server.py", "rethlas_generation_mcp_tools")
@@ -82,3 +95,69 @@ def _load_module(path: Path, module_name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_TOOL_DESCRIPTIONS = {
+    "memory_init": "Initialize append-only memory channels for a problem.",
+    "memory_append": "Append a structured record to a problem memory channel.",
+    "memory_search": "Search prior structured memory for a problem.",
+    "branch_update": "Record current branch state for a proof strategy.",
+    "search_arxiv_theorems": "Search theorem-like statements from arXiv-related sources.",
+    "verify_proof_service": "Ask the verification service to check a complete proof.",
+}
+
+
+_TOOL_PARAMETERS: dict[str, dict[str, Any]] = {
+    "memory_init": {
+        "type": "object",
+        "required": ["problem_id"],
+        "properties": {
+            "problem_id": {"type": "string"},
+            "meta": {"type": "object"},
+        },
+    },
+    "memory_append": {
+        "type": "object",
+        "required": ["problem_id", "channel", "record"],
+        "properties": {
+            "problem_id": {"type": "string"},
+            "channel": {"type": "string"},
+            "record": {"type": "object"},
+        },
+    },
+    "memory_search": {
+        "type": "object",
+        "required": ["problem_id", "query"],
+        "properties": {
+            "problem_id": {"type": "string"},
+            "query": {"type": "string"},
+            "channels": {"type": "array", "items": {"type": "string"}},
+            "limit_per_channel": {"type": "integer"},
+        },
+    },
+    "branch_update": {
+        "type": "object",
+        "required": ["problem_id", "branch_id", "state"],
+        "properties": {
+            "problem_id": {"type": "string"},
+            "branch_id": {"type": "string"},
+            "state": {"type": "object"},
+        },
+    },
+    "search_arxiv_theorems": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {"type": "string"},
+            "num_results": {"type": "integer"},
+        },
+    },
+    "verify_proof_service": {
+        "type": "object",
+        "required": ["statement", "proof"],
+        "properties": {
+            "statement": {"type": "string"},
+            "proof": {"type": "string"},
+        },
+    },
+}

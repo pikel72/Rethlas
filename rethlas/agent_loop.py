@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -8,7 +9,7 @@ from .config import RethlasConfig
 from .events import append_event
 from .problems import ProblemPaths
 from .references import ReferencePreparation
-from .runtime import RuntimeRequest, backend_for
+from .runtime import RuntimeRequest, _litellm_options
 from .tools import build_generation_tool_registry
 
 
@@ -97,31 +98,22 @@ def run_native_generation(
             message=f"native generation does not support provider kind {request.provider.kind}",
         )
 
-    prompt = _native_generation_prompt(config, problem, refs)
-    runtime_request = RuntimeRequest(
-        role="native-generation",
-        cwd=request.cwd,
-        prompt=prompt,
-        log_path=request.log_path,
-        model=request.model,
-        provider=request.provider,
-        timeout_seconds=request.timeout_seconds,
-    )
-    runtime_result = backend_for(request.provider).run(runtime_request, stream=stream)
-    if runtime_result.returncode != 0:
+    try:
+        draft = _run_litellm_tool_loop(config, problem, refs, request, registry, stream=stream)
+    except Exception as exc:
         append_event(
             problem.log_dir,
             "run_failed",
-            {"returncode": runtime_result.returncode, "error": runtime_result.error},
+            {"returncode": 1, "error": str(exc)},
         )
         return NativeGenerationResult(
-            returncode=runtime_result.returncode,
+            returncode=1,
             draft_path=draft_path,
             verified_path=verified_path,
-            message=runtime_result.error or "native generation model call failed",
+            message=f"native generation model call failed: {exc}",
         )
 
-    draft_path.write_text(runtime_result.output_text, encoding="utf-8")
+    draft_path.write_text(draft, encoding="utf-8")
     registry.call(
         "memory_append",
         {
@@ -137,6 +129,74 @@ def run_native_generation(
         verified_path=verified_path,
         message="native generation wrote blueprint.md; verification loop is not implemented for LiteLLM generation yet",
     )
+
+
+def _run_litellm_tool_loop(
+    config: RethlasConfig,
+    problem: ProblemPaths,
+    refs: ReferencePreparation,
+    request: RuntimeRequest,
+    registry,
+    *,
+    stream: bool,
+    max_iterations: int = 8,
+) -> str:
+    try:
+        import litellm
+    except ImportError as exc:
+        raise RuntimeError("LiteLLM backend selected, but the 'litellm' package is not installed.") from exc
+
+    messages: list[dict] = [
+        {"role": "system", "content": _native_generation_system_prompt(config)},
+        {"role": "user", "content": _native_generation_user_prompt(config, problem, refs)},
+    ]
+    transcript: list[str] = []
+    tools = registry.schemas() if request.model.supports_tools else None
+
+    for iteration in range(1, max_iterations + 1):
+        append_event(problem.log_dir, "model_started", {"iteration": iteration, "model": request.model.name})
+        response = litellm.completion(
+            model=request.model.model,
+            messages=messages,
+            tools=tools,
+            timeout=request.timeout_seconds,
+            **_litellm_options(request.model),
+        )
+        message = response.choices[0].message
+        content = getattr(message, "content", None) or ""
+        tool_calls = getattr(message, "tool_calls", None) or []
+        transcript.append(f"\n\n## iteration {iteration}\n{content}")
+        if content and stream:
+            print(content)
+
+        if not tool_calls:
+            request.log_path.parent.mkdir(parents=True, exist_ok=True)
+            request.log_path.write_text("\n".join(transcript), encoding="utf-8")
+            return content
+
+        messages.append(_message_to_dict(message))
+        for tool_call in tool_calls:
+            function = tool_call.function
+            name = function.name
+            args_json = function.arguments or "{}"
+            append_event(problem.log_dir, "tool_started", {"iteration": iteration, "tool": name})
+            result = registry.call_json(name, args_json)
+            payload = result.result if result.ok else {"error": result.error}
+            append_event(
+                problem.log_dir,
+                "tool_finished",
+                {"iteration": iteration, "tool": name, "ok": result.ok},
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(payload, ensure_ascii=False),
+                }
+            )
+            transcript.append(f"\n\n### tool {name}\n{json.dumps(payload, ensure_ascii=False)}")
+
+    raise RuntimeError(f"native generation exceeded {max_iterations} model iterations")
 
 
 def _native_generation_prompt(
@@ -160,6 +220,45 @@ def _native_generation_prompt(
         f"{reference_text}\n\n"
         "Write a markdown proof blueprint. Return only the markdown content for blueprint.md."
     )
+
+
+def _native_generation_system_prompt(config: RethlasConfig) -> str:
+    return (config.paths.generation_dir / "AGENTS.md").read_text(encoding="utf-8")
+
+
+def _native_generation_user_prompt(
+    config: RethlasConfig,
+    problem: ProblemPaths,
+    refs: ReferencePreparation,
+) -> str:
+    problem_text = problem.problem_file.read_text(encoding="utf-8")
+    reference_text = _read_reference_text(problem.reference_dir)
+    return (
+        f"Problem id: {problem.problem_id}\n"
+        f"Problem file: {problem.problem_path}\n"
+        f"Reference policy: {refs.prompt_suffix}\n\n"
+        "Use the available tools for memory and verification. "
+        "When you have a candidate proof blueprint, return only markdown for blueprint.md.\n\n"
+        "Problem statement:\n"
+        f"{problem_text}\n\n"
+        "Reference excerpts:\n"
+        f"{reference_text}\n"
+    )
+
+
+def _message_to_dict(message) -> dict:
+    if hasattr(message, "model_dump"):
+        return message.model_dump(exclude_none=True)
+    if isinstance(message, dict):
+        return message
+    payload = {"role": "assistant", "content": getattr(message, "content", "")}
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        payload["tool_calls"] = [
+            call.model_dump(exclude_none=True) if hasattr(call, "model_dump") else call
+            for call in tool_calls
+        ]
+    return payload
 
 
 def _read_reference_text(reference_dir: Path, max_chars: int = 12000) -> str:

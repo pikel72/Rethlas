@@ -163,232 +163,113 @@ port = 8091
 
 ## Custom Model Configuration
 
-Models are configured in `rethlas.toml`.
+Rethlas reads model configuration from two places:
 
-There are three concepts:
+- `rethlas.toml`: holds `[runtime]`, `[providers.*]`, and a small set of toml profiles (`gpt-5.5`, `codex-fast`, `codex-deep`, and 4 `mock-*`).
+- `.env`: holds API keys and per-preset overrides for the 14 built-in env presets (deepseek, openai, claude, gemini, qwen, kimi, openrouter, ollama, glm, MiniMax, siliconflow, doubao, mimo, custom).
 
-- **provider**: how the model is called, such as `codex-cli`, `litellm`, or `mock`
-- **model profile**: a named model configuration used by `--model`
-- **default model**: the profile used when `--model` is omitted
+The default runtime is still Codex CLI. To switch to a cloud vendor, fill in `<VENDOR>_API_KEY` in `.env` and set `RETHLAS_MODEL=<preset>` (or pass `--model <preset>`).
 
-The default is:
+### Built-in env presets
 
-```toml
-[runtime]
-default_model = "gpt-5.5"
-timeout_seconds = 3600
-```
+| Preset name   | Vendor                  | Required env var       | Default model                |
+|---------------|-------------------------|------------------------|------------------------------|
+| `deepseek-1`  | DeepSeek                | `DEEPSEEK_API_KEY`     | `deepseek-chat`              |
+| `openai`      | OpenAI                  | `OPENAI_API_KEY`       | `gpt-5`                      |
+| `claude`      | Anthropic               | `ANTHROPIC_API_KEY`    | `claude-opus-4-5`            |
+| `gemini`      | Google Gemini           | `GOOGLE_API_KEY`       | `gemini-2.5-pro`             |
+| `qwen`        | 通义千问 (DashScope)    | `QWEN_API_KEY`         | `qwen-plus`                  |
+| `kimi`        | Moonshot Kimi           | `KIMI_API_KEY`         | `kimi-k2-0711-preview`       |
+| `openrouter`  | OpenRouter              | `OPENROUTER_API_KEY`   | `openai/gpt-4o`              |
+| `ollama`      | Ollama (local)          | `OLLAMA_API_KEY` (可空) | `llama3.1`                  |
+| `glm`         | 智谱 GLM                 | `GLM_API_KEY`          | `glm-4.5`                    |
+| `MiniMax`     | MiniMax                 | `MiniMax_API_KEY`     | `MiniMax-M3`                |
+| `siliconflow` | 硅基流动 (SiliconFlow)  | `SILICONFLOW_API_KEY`  | `Qwen/Qwen2.5-72B-Instruct`  |
+| `doubao`      | 豆包 (火山方舟)         | `DOUBAO_API_KEY`       | `doubao-seed-1-6-250615`     |
+| `mimo`        | 小米 MiMo               | `MIMO_API_KEY`         | `mimo-7b`                    |
+| `custom`      | 任意未列出厂商 (自填)   | `CUSTOM_API_KEY` + `CUSTOM_API_BASE` + `CUSTOM_COMPAT` | `<preset name>` |
 
-You can also override the default profile for one shell session:
+Each preset also has two optional env vars:
+
+- `<VENDOR>_API_BASE`: override the default `base_url` (for proxies or self-hosted endpoints).
+- `<PRESET>_MODEL` (e.g. `DEEPSEEK_1_MODEL`): override the default real model name.
+
+### Use a preset
+
+Set the key in `.env` and run:
 
 ```bash
-export RETHLAS_MODEL=openai-deep
+export DEEPSEEK_API_KEY="sk-..."
+export RETHLAS_MODEL=deepseek-1
+python -m rethlas.cli run ns/ns
 ```
 
-PowerShell:
+PowerShell equivalent:
 
 ```powershell
-$env:RETHLAS_MODEL = "openai-deep"
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:RETHLAS_MODEL = "deepseek-1"
+python -m rethlas.cli run ns/ns
 ```
 
-Available built-in profiles include:
-
-```text
-gpt-5.5                 Codex default, xhigh effort
-codex-fast              Codex, medium effort
-codex-deep              Codex, xhigh effort
-openai-default          LiteLLM OpenAI profile
-openai-fast             LiteLLM OpenAI, lower token budget
-openai-deep             LiteLLM OpenAI, larger token budget
-anthropic-default       LiteLLM Anthropic profile
-anthropic-fast          LiteLLM Anthropic Sonnet profile
-anthropic-deep          LiteLLM Anthropic Opus profile
-mock-generation         local deterministic generation test
-mock-verification-correct
-mock-verification-wrong
-mock-verification-malformed
-```
-
-### Codex CLI Model
-
-The default profile uses Codex CLI:
-
-```toml
-[providers.codex]
-kind = "codex-cli"
-command = "codex"
-
-[models."gpt-5.5"]
-provider = "codex"
-model = "gpt-5.5"
-reasoning_effort = "xhigh"
-supports_tools = true
-supports_streaming = true
-```
-
-Use it explicitly:
+Inspect the resolved plan before a long run:
 
 ```bash
-python -m rethlas.cli run ns/ns --model gpt-5.5
+python -m rethlas.cli plan --role generation --problem ns/ns --model deepseek-1
+python -m rethlas.cli plan --role verification --model deepseek-1
 ```
 
-### OpenAI Through LiteLLM
+### Switch the real model name
 
-Set your API key:
+`DEEPSEEK_1_MODEL=deepseek-reasoner` makes `deepseek-1` resolve to `deepseek-reasoner` instead of `deepseek-chat`, with no code change.
+
+### Custom (任意未列出厂商)
 
 ```bash
-export OPENAI_API_KEY="..."
+CUSTOM_API_KEY=sk-...
+CUSTOM_API_BASE=https://my-proxy.example.com/v1
+CUSTOM_COMPAT=openai
+CUSTOM_MODEL=llama-3.3-70b
+RETHLAS_MODEL=custom
 ```
 
-PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY = "..."
-```
-
-Example profile:
-
-```toml
-[providers.litellm]
-kind = "litellm"
-
-[models.openai-default]
-provider = "litellm"
-model = "openai/gpt-5.5"
-reasoning_effort = "xhigh"
-api_key_env = "OPENAI_API_KEY"
-supports_tools = true
-supports_streaming = true
-```
-
-Other included OpenAI presets:
+### Switch back to Codex
 
 ```bash
-python -m rethlas.cli run ns/ns --model openai-fast
-python -m rethlas.cli run ns/ns --model openai-deep
+unset RETHLAS_MODEL
+python -m rethlas.cli run ns/ns   # uses rethlas.toml's [runtime].default_model = "gpt-5.5" (codex)
 ```
 
-Inspect the plan:
+`codex-fast` and `codex-deep` (different `reasoning_effort` on the codex profile) remain in `rethlas.toml`:
 
 ```bash
-python -m rethlas.cli plan --role generation --problem ns/ns --model openai-default
-python -m rethlas.cli plan --role verification --model openai-default
+python -m rethlas.cli run ns/ns --model codex-fast
+python -m rethlas.cli run ns/ns --model codex-deep
 ```
 
-Run generation with that profile:
+### Add a new vendor preset
 
-```bash
-python -m rethlas.cli run ns/ns --model openai-default
-```
+The 14 built-in presets are not user-extensible from `.env`. To add a new vendor:
 
-### Anthropic Through LiteLLM
-
-Set your API key:
-
-```bash
-export ANTHROPIC_API_KEY="..."
-```
-
-PowerShell:
-
-```powershell
-$env:ANTHROPIC_API_KEY = "..."
-```
-
-Example profile:
-
-```toml
-[models.anthropic-default]
-provider = "litellm"
-model = "anthropic/claude-opus-4-5"
-api_key_env = "ANTHROPIC_API_KEY"
-supports_tools = true
-supports_streaming = true
-```
-
-Use it:
-
-```bash
-python -m rethlas.cli run ns/ns --model anthropic-default
-python -m rethlas.cli run ns/ns --model anthropic-fast
-python -m rethlas.cli run ns/ns --model anthropic-deep
-```
-
-### Add Your Own Model Profile
-
-Add a new table under `[models.<name>]`.
-
-For an OpenAI-compatible LiteLLM model:
-
-```toml
-[models.my-openai-model]
-provider = "litellm"
-model = "openai/gpt-5.5"
-api_key_env = "OPENAI_API_KEY"
-reasoning_effort = "xhigh"
-supports_tools = true
-supports_streaming = true
-max_tokens = 8000
-temperature = 0.2
-```
-
-For an Anthropic model:
-
-```toml
-[models.my-claude-model]
-provider = "litellm"
-model = "anthropic/claude-opus-4-5"
-api_key_env = "ANTHROPIC_API_KEY"
-supports_tools = true
-supports_streaming = true
-max_tokens = 8000
-temperature = 0.2
-```
-
-Make it the default:
-
-```toml
-[runtime]
-default_model = "my-openai-model"
-timeout_seconds = 3600
-```
-
-Or keep the default unchanged and pass it per run:
-
-```bash
-python -m rethlas.cli run ns/ns --model my-openai-model
-```
-
-Always check a custom model before running:
-
-```bash
-python -m rethlas.cli doctor --verbose
-python -m rethlas.cli plan --role generation --problem ns/ns --model my-openai-model
-python -m rethlas.cli plan --role verification --model my-openai-model
-```
-
-If an API key or package is missing, `plan` prints it before a long run starts.
+- File an issue or PR to add an entry to `rethlas/presets.py::BUILTIN_PRESETS`, **or**
+- Use the `custom` slot (any base URL + openai/anthropic compat).
 
 ### Environment Variables
 
-`.env.example` documents the common variables:
+| Variable | Purpose |
+|---|---|
+| `<VENDOR>_API_KEY` | API key for the vendor (e.g. `DEEPSEEK_API_KEY`). |
+| `<VENDOR>_API_BASE` | Override the default base URL. |
+| `<PRESET>_MODEL` | Override the default real model name. |
+| `RETHLAS_MODEL` | Selects the active preset. Overridden by `--model` on the CLI. |
+| `RETHLAS_VERIFICATION_MODEL` | Selects the preset for the verification agent (defaults to `RETHLAS_MODEL`). |
+| `CODEX_BIN` | Codex CLI binary name (defaults to `codex`). |
 
-```text
-OPENAI_API_KEY
-ANTHROPIC_API_KEY
-RETHLAS_MODEL
-CODEX_BIN
-OPENAI_API_BASE
-ANTHROPIC_API_BASE
-```
-
-`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are used by the built-in LiteLLM model profiles through `api_key_env`.
-
-`RETHLAS_MODEL` overrides `[runtime].default_model` for the current process. Passing `--model ...` on the command line still takes precedence.
+`.env.example` lists every supported variable with a comment describing the matching preset.
 
 ### Mock Models
 
-Mock profiles require no Codex, LiteLLM, or API key. They are useful for checking local wiring:
+Mock profiles are independent of env presets and useful for local wiring / CI:
 
 ```bash
 python -m rethlas.cli run example --model mock-generation

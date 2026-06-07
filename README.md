@@ -22,6 +22,31 @@ Install Python dependencies:
 python -m pip install -r requirements.txt
 ```
 
+Optional: create a local environment file for API keys:
+
+```bash
+cp .env.example .env
+```
+
+Rethlas does not automatically load `.env`; load it in your shell before running commands.
+
+Bash/zsh:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+PowerShell users can either set variables manually:
+
+```powershell
+$env:OPENAI_API_KEY = "..."
+$env:ANTHROPIC_API_KEY = "..."
+```
+
+or copy values from `.env.example` into their shell profile or session.
+
 For the default Codex model profile, install Codex CLI:
 
 ```bash
@@ -154,6 +179,36 @@ default_model = "gpt-5.5"
 timeout_seconds = 3600
 ```
 
+You can also override the default profile for one shell session:
+
+```bash
+export RETHLAS_MODEL=openai-deep
+```
+
+PowerShell:
+
+```powershell
+$env:RETHLAS_MODEL = "openai-deep"
+```
+
+Available built-in profiles include:
+
+```text
+gpt-5.5                 Codex default, xhigh effort
+codex-fast              Codex, medium effort
+codex-deep              Codex, xhigh effort
+openai-default          LiteLLM OpenAI profile
+openai-fast             LiteLLM OpenAI, lower token budget
+openai-deep             LiteLLM OpenAI, larger token budget
+anthropic-default       LiteLLM Anthropic profile
+anthropic-fast          LiteLLM Anthropic Sonnet profile
+anthropic-deep          LiteLLM Anthropic Opus profile
+mock-generation         local deterministic generation test
+mock-verification-correct
+mock-verification-wrong
+mock-verification-malformed
+```
+
 ### Codex CLI Model
 
 The default profile uses Codex CLI:
@@ -206,6 +261,13 @@ supports_tools = true
 supports_streaming = true
 ```
 
+Other included OpenAI presets:
+
+```bash
+python -m rethlas.cli run ns/ns --model openai-fast
+python -m rethlas.cli run ns/ns --model openai-deep
+```
+
 Inspect the plan:
 
 ```bash
@@ -248,6 +310,8 @@ Use it:
 
 ```bash
 python -m rethlas.cli run ns/ns --model anthropic-default
+python -m rethlas.cli run ns/ns --model anthropic-fast
+python -m rethlas.cli run ns/ns --model anthropic-deep
 ```
 
 ### Add Your Own Model Profile
@@ -304,6 +368,23 @@ python -m rethlas.cli plan --role verification --model my-openai-model
 ```
 
 If an API key or package is missing, `plan` prints it before a long run starts.
+
+### Environment Variables
+
+`.env.example` documents the common variables:
+
+```text
+OPENAI_API_KEY
+ANTHROPIC_API_KEY
+RETHLAS_MODEL
+CODEX_BIN
+OPENAI_API_BASE
+ANTHROPIC_API_BASE
+```
+
+`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are used by the built-in LiteLLM model profiles through `api_key_env`.
+
+`RETHLAS_MODEL` overrides `[runtime].default_model` for the current process. Passing `--model ...` on the command line still takes precedence.
 
 ### Mock Models
 

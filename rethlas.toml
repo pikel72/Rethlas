@@ -34,6 +34,20 @@ reasoning_effort = "xhigh"
 supports_tools = true
 supports_streaming = true
 
+[models.codex-fast]
+provider = "codex"
+model = "gpt-5.5"
+reasoning_effort = "medium"
+supports_tools = true
+supports_streaming = true
+
+[models.codex-deep]
+provider = "codex"
+model = "gpt-5.5"
+reasoning_effort = "xhigh"
+supports_tools = true
+supports_streaming = true
+
 [models.openai-default]
 provider = "litellm"
 model = "openai/gpt-5.5"
@@ -42,12 +56,50 @@ api_key_env = "OPENAI_API_KEY"
 supports_tools = true
 supports_streaming = true
 
+[models.openai-fast]
+provider = "litellm"
+model = "openai/gpt-5.5"
+reasoning_effort = "medium"
+api_key_env = "OPENAI_API_KEY"
+supports_tools = true
+supports_streaming = true
+max_tokens = 4000
+temperature = 0.2
+
+[models.openai-deep]
+provider = "litellm"
+model = "openai/gpt-5.5"
+reasoning_effort = "xhigh"
+api_key_env = "OPENAI_API_KEY"
+supports_tools = true
+supports_streaming = true
+max_tokens = 12000
+temperature = 0.1
+
 [models.anthropic-default]
 provider = "litellm"
 model = "anthropic/claude-opus-4-5"
 api_key_env = "ANTHROPIC_API_KEY"
 supports_tools = true
 supports_streaming = true
+
+[models.anthropic-fast]
+provider = "litellm"
+model = "anthropic/claude-sonnet-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+supports_tools = true
+supports_streaming = true
+max_tokens = 4000
+temperature = 0.2
+
+[models.anthropic-deep]
+provider = "litellm"
+model = "anthropic/claude-opus-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+supports_tools = true
+supports_streaming = true
+max_tokens = 12000
+temperature = 0.1
 
 [models.openai-native-default]
 provider = "openai"

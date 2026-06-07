@@ -10,6 +10,7 @@ import urllib.request
 from typing import Optional
 
 from .config import load_config
+from .presets import BUILTIN_PRESETS, base_url_env_name
 from .agent_loop import run_native_generation
 from .events import append_event
 from .problems import normalize_problem
@@ -100,6 +101,32 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 f"max_tokens={model.max_tokens} temperature={model.temperature} "
                 f"context_window={model.context_window}"
             )
+    print("")
+    print("env presets:")
+    for name, preset in sorted(BUILTIN_PRESETS.items()):
+        key_set = bool(os.getenv(preset.key_env))
+        base_env = base_url_env_name(preset)
+        base_override = os.getenv(base_env)
+        status = "ready" if (preset.key_optional or key_set) else f"missing {preset.key_env}"
+        print(f"  {name} ({preset.display_name}): {status}")
+        if args.verbose:
+            print(
+                f"    base_url={preset.base_url or '(none)'} "
+                f"compat={preset.compat} "
+                f"key_env={preset.key_env} "
+                f"key_set={key_set} "
+                f"base_override={base_override or '(none)'} "
+                f"default_model={preset.default_model}"
+            )
+    if args.verbose and "custom" in BUILTIN_PRESETS:
+        custom = BUILTIN_PRESETS["custom"]
+        custom_key = bool(os.getenv(custom.key_env))
+        custom_base = os.getenv("CUSTOM_API_BASE")
+        custom_compat = os.getenv("CUSTOM_COMPAT")
+        print(
+            f"  custom: key={custom_key} base={custom_base or '(none)'} "
+            f"compat={custom_compat or '(none)'}"
+        )
     print("")
     print("providers:")
     for provider in config.providers.values():

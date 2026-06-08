@@ -167,7 +167,7 @@ The default runtime is still Codex CLI. To switch to a cloud vendor, fill in `<V
 
 `BUILTIN_PRESETS` (in `rethlas/presets.py`) carries **vendor metadata only** — `base_url`, `compat` (openai-compatible vs anthropic-compatible), and which env var holds the API key. It does **not** carry a "default model name". The real model name is supplied by you in `.env` via `<VENDOR>_MODEL` (e.g. `DEEPSEEK_MODEL=deepseek-chat`).
 
-This means when a vendor ships a new flagship model, you change one line in `.env` — Rethlas does not need a release. `.env.example` lists the current recommended model names per vendor; verify against the vendor's own docs for the latest options.
+This means when a vendor ships a new model, you change one line in `.env` — Rethlas does not need a release. `.env.example` lists example model names per vendor; verify against the vendor's own docs for the latest options.
 
 ### Built-in env presets
 
@@ -182,11 +182,11 @@ This means when a vendor ships a new flagship model, you change one line in `.en
 | `openrouter`  | OpenRouter              | `OPENROUTER_API_KEY`   | `OPENROUTER_MODEL`      |
 | `ollama`      | Ollama (local)          | `OLLAMA_API_KEY` (可空) | `OLLAMA_MODEL`         |
 | `glm`         | 智谱 GLM                 | `GLM_API_KEY`          | `GLM_MODEL`             |
-| `MiniMax`     | MiniMax                 | `MiniMax_API_KEY`     | `MiniMax_MODEL`        |
+| `MiniMax`     | MiniMax                 | `MINIMAX_API_KEY`     | `MINIMAX_MODEL`        |
 | `siliconflow` | 硅基流动 (SiliconFlow)  | `SILICONFLOW_API_KEY`  | `SILICONFLOW_MODEL`     |
 | `doubao`      | 豆包 (火山方舟)         | `DOUBAO_API_KEY`       | `DOUBAO_MODEL`          |
 | `mimo`        | 小米 MiMo               | `MIMO_API_KEY`         | `MIMO_MODEL`            |
-| `custom`      | 任意未列出厂商 (自填)   | `CUSTOM_API_KEY` + `CUSTOM_API_BASE` + `CUSTOM_COMPAT` | `CUSTOM_MODEL` |
+| `custom`      | 任意未列出厂商 (自填)   | `CUSTOM_API_BASE` + `CUSTOM_COMPAT` (`CUSTOM_API_KEY` 可选) | `CUSTOM_MODEL` |
 
 Each preset also has one optional env var for proxy / self-hosted endpoints:
 
@@ -227,19 +227,19 @@ Change `<VENDOR>_MODEL` in `.env`:
 DEEPSEEK_MODEL=deepseek-reasoner
 ```
 
-This is the only place you need to edit when a vendor releases a new model — no Python change, no Rethlas release. `.env.example` is the source of truth for what's currently recommended; verify against the vendor's own docs for the latest options.
+This is the only place you need to edit when a vendor releases a new model — no Python change, no Rethlas release. `.env.example` gives examples and variable names; the vendor's own docs remain the source of truth for available model IDs.
 
 ### Custom (任意未列出厂商)
 
 ```bash
-CUSTOM_API_KEY=sk-...
 CUSTOM_API_BASE=https://my-proxy.example.com/v1
 CUSTOM_COMPAT=openai
 CUSTOM_MODEL=llama-3.3-70b
+CUSTOM_API_KEY=sk-...  # optional if the endpoint does not require auth
 RETHLAS_MODEL=custom
 ```
 
-All four are required — `CUSTOM_MODEL` is not optional because the `custom` slot has no default model.
+`CUSTOM_API_BASE`, `CUSTOM_COMPAT`, and `CUSTOM_MODEL` are required. `CUSTOM_API_KEY` is optional so local proxies without auth can work.
 
 ### Switch back to Codex
 
@@ -273,7 +273,7 @@ The 14 built-in presets are not user-extensible from `.env`. To add a new vendor
 | `RETHLAS_VERIFICATION_MODEL` | Selects the preset for the verification agent (defaults to `RETHLAS_MODEL`). |
 | `CODEX_BIN` | Codex CLI binary name (defaults to `codex`). |
 
-`.env.example` lists every supported variable with a full reference card (vendor home, API docs, key signup, current recommended model names).
+`.env.example` lists every supported variable with a reference card (vendor home, API docs, key signup, and example model names).
 
 ### Mock Models
 

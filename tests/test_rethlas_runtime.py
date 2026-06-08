@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
+from rethlas.agent_loop import _run_litellm_tool_loop
 from rethlas.config import ModelConfig, load_config
 from rethlas.problems import normalize_problem
-from rethlas.runtime import LiteLLMBackend, _extract_json_object, _validate_verification_payload
+from rethlas.references import ReferencePreparation
+from rethlas.runtime import _extract_json_object, _validate_verification_payload, build_request
 from rethlas.subagents import SubAgentRunner, SubAgentTask
 from rethlas.tools import build_generation_tool_registry
 
@@ -75,6 +79,56 @@ def test_litellm_model_id_passthrough_without_compat():
     from rethlas.runtime import litellm_model_id
     model = ModelConfig(name="x", provider="litellm", model="gpt-5.5", compat=None)
     assert litellm_model_id(model) == "gpt-5.5"
+
+
+def test_native_litellm_tool_loop_uses_shared_completion_kwargs(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeLiteLLM:
+        @staticmethod
+        def completion(**kwargs):
+            captured.update(kwargs)
+            message = SimpleNamespace(content="draft proof", tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeRegistry:
+        def schemas(self):
+            return [
+                {
+                    "type": "function",
+                    "function": {"name": "memory_init", "parameters": {"type": "object"}},
+                }
+            ]
+
+    monkeypatch.setitem(sys.modules, "litellm", FakeLiteLLM)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setenv("DEEPSEEK_API_BASE", "https://proxy.example.com/v1")
+
+    config = load_config()
+    problem = normalize_problem("example", config.paths.generation_dir)
+    runtime_request = build_request(
+        config,
+        role="generation",
+        cwd=tmp_path,
+        prompt="hello",
+        log_path=tmp_path / "log.md",
+        model_name="deepseek",
+    )
+    draft = _run_litellm_tool_loop(
+        config,
+        problem,
+        ReferencePreparation(reference_dir=problem.reference_dir, exists=False),
+        runtime_request,
+        FakeRegistry(),
+        stream=False,
+    )
+
+    assert draft == "draft proof"
+    assert captured["model"] == "openai/deepseek-chat"
+    assert captured["api_key"] == "sk-test"
+    assert captured["api_base"] == "https://proxy.example.com/v1"
+    assert captured["tools"][0]["function"]["name"] == "memory_init"
 
 
 def test_verification_json_validation():

@@ -4,8 +4,8 @@ import os
 
 import pytest
 
+from rethlas.cli import _preset_status
 from rethlas.config import load_config
-
 from rethlas.presets import BUILTIN_PRESETS, PresetSpec, base_url_env_name
 
 
@@ -88,7 +88,7 @@ def fresh_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENROUTER_MODEL",
         "OLLAMA_API_KEY", "OLLAMA_MODEL",
         "GLM_API_KEY", "GLM_MODEL",
-        "MiniMax_API_KEY", "MiniMax_API_BASE", "MiniMax_MODEL",
+        "MINIMAX_API_KEY", "MINIMAX_API_BASE", "MINIMAX_MODEL",
         "SILICONFLOW_API_KEY", "SILICONFLOW_MODEL",
         "DOUBAO_API_KEY", "DOUBAO_API_BASE", "DOUBAO_MODEL",
         "MIMO_API_KEY", "MIMO_API_BASE", "MIMO_MODEL",
@@ -110,6 +110,8 @@ def test_builtin_preset_resolves_with_key_and_model(fresh_env):
     assert m.api_key_env == "DEEPSEEK_API_KEY"
     assert m.api_base == "https://api.deepseek.com/v1"
     assert m.compat == "openai"
+    assert m.supports_tools is True
+    assert m.supports_streaming is True
 
 
 def test_builtin_preset_model_via_env(fresh_env):
@@ -142,6 +144,18 @@ def test_missing_model_raises_friendly_error(fresh_env):
     config = load_config()
     with pytest.raises(ValueError, match="DEEPSEEK_MODEL"):
         config.resolve_model("deepseek")
+
+
+def test_doctor_preset_status_checks_model_env(fresh_env):
+    fresh_env.setenv("DEEPSEEK_API_KEY", "sk-x")
+    assert _preset_status("deepseek", BUILTIN_PRESETS["deepseek"]) == "missing DEEPSEEK_MODEL"
+
+
+def test_doctor_custom_status_checks_required_env(fresh_env):
+    assert (
+        _preset_status("custom", BUILTIN_PRESETS["custom"])
+        == "missing CUSTOM_API_BASE, CUSTOM_COMPAT, CUSTOM_MODEL"
+    )
 
 
 def test_ollama_key_optional(fresh_env):

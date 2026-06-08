@@ -110,10 +110,10 @@ BUILTIN_PRESETS: Dict[str, PresetSpec] = {
     "MiniMax": PresetSpec(
         name="MiniMax",
         display_name="MiniMax",
-        base_url="https://api.MiniMax.io/v1",
+        base_url="https://api.minimax.io/v1",
         compat="openai",
-        key_env="MiniMax_API_KEY",
-        model_env_override="MiniMax_MODEL",
+        key_env="MINIMAX_API_KEY",
+        model_env_override="MINIMAX_MODEL",
     ),
     "siliconflow": PresetSpec(
         name="siliconflow",

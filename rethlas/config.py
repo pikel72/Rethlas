@@ -126,7 +126,7 @@ def _resolve_env_preset(name: str) -> ModelConfig:
     if not model_name:
         raise ValueError(
             f"Preset {name!r} requires {preset.model_env_override} to be set in .env. "
-            f"See .env.example for the current recommended model names per vendor. "
+            f"See .env.example for example model names per vendor. "
             f"Unset RETHLAS_MODEL to use the default (Codex) instead."
         )
 
@@ -137,6 +137,8 @@ def _resolve_env_preset(name: str) -> ModelConfig:
         api_key_env=preset.key_env,
         api_base=base_url,
         compat=compat,
+        supports_tools=True,
+        supports_streaming=True,
     )
 
 

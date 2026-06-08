@@ -10,7 +10,7 @@ import urllib.request
 from typing import Optional
 
 from .config import find_repo_root, load_config, load_dotenv_from_repo_root
-from .presets import BUILTIN_PRESETS, base_url_env_name
+from .presets import BUILTIN_PRESETS, PresetSpec, base_url_env_name
 from .agent_loop import run_native_generation
 from .events import append_event
 from .problems import normalize_problem
@@ -52,6 +52,23 @@ def _print_plan(plan) -> None:
         print(f"api key env: {plan.api_key_env}")
     for note in plan.notes:
         print(f"note: {note}")
+
+
+def _preset_status(name: str, preset: PresetSpec) -> str:
+    missing: list[str] = []
+    if not preset.key_optional and not os.getenv(preset.key_env):
+        missing.append(preset.key_env)
+    if name == "custom":
+        if not os.getenv("CUSTOM_API_BASE"):
+            missing.append("CUSTOM_API_BASE")
+        compat = os.getenv("CUSTOM_COMPAT", "").strip().lower()
+        if compat not in {"openai", "anthropic"}:
+            missing.append("CUSTOM_COMPAT")
+    if not os.getenv(preset.model_env_override):
+        missing.append(preset.model_env_override)
+    if missing:
+        return "missing " + ", ".join(missing)
+    return "ready"
 
 
 def _generation_request(config, args):
@@ -107,7 +124,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         key_set = bool(os.getenv(preset.key_env))
         base_env = base_url_env_name(preset)
         base_override = os.getenv(base_env)
-        status = "ready" if (preset.key_optional or key_set) else f"missing {preset.key_env}"
+        status = _preset_status(name, preset)
         print(f"  {name} ({preset.display_name}): {status}")
         if args.verbose:
             model_set = bool(os.getenv(preset.model_env_override))
@@ -120,15 +137,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 f"model_env={preset.model_env_override} "
                 f"model_set={model_set}"
             )
-    if args.verbose and "custom" in BUILTIN_PRESETS:
-        custom = BUILTIN_PRESETS["custom"]
-        custom_key = bool(os.getenv(custom.key_env))
-        custom_base = os.getenv("CUSTOM_API_BASE")
-        custom_compat = os.getenv("CUSTOM_COMPAT")
-        print(
-            f"  custom: key={custom_key} base={custom_base or '(none)'} "
-            f"compat={custom_compat or '(none)'}"
-        )
     print("")
     print("providers:")
     for provider in config.providers.values():
@@ -368,7 +376,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model", default=None, help="Model profile from rethlas.toml")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--no-live-log", action="store_true")
-    run.add_argument("--allow-incomplete-backend", action="store_true")
     run.set_defaults(func=cmd_run, role="generation")
 
     status = subparsers.add_parser("status", help="Inspect logs, memory, and result files for a problem")

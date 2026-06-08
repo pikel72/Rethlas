@@ -207,7 +207,7 @@ class LiteLLMBackend(RuntimeBackend):
         if request.role == "verification":
             notes.append("Verification JSON extraction and writing is implemented.")
         else:
-            notes.append("Full Rethlas tool/MCP loop integration is not implemented yet.")
+            notes.append("Generation uses the native LiteLLM tool loop when model tools are enabled.")
         api_base_url = self._api_base_url(request)
         return RuntimePlan(
             role=request.role,

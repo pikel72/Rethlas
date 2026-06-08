@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import html
+import json
 import socketserver
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List, Optional, Tuple
 
 from .config import RethlasConfig
+from .events import event_path, iter_events
 
 
 @dataclass(frozen=True)
@@ -17,9 +20,90 @@ class ViewerBuild:
     page_count: int
 
 
+@dataclass(frozen=True)
+class ResultStatus:
+    problem_id: str
+    source: Optional[Path]
+    badge: str  # "verified" | "draft" | "missing"
+    latest_event_type: Optional[str]
+    latest_event_at: Optional[str]
+    last_update_display: str
+
+    @property
+    def has_events(self) -> bool:
+        return self.latest_event_type is not None
+
+
+def _problem_status_for_viewer(
+    problem_id: str, results_dir: Path, logs_dir: Path
+) -> ResultStatus:
+    result_dir = results_dir / problem_id
+    source = _best_result_file(result_dir)
+    if source is not None and source.name == "blueprint_verified.md":
+        badge = "verified"
+    elif source is not None and source.name == "blueprint.md":
+        badge = "draft"
+    else:
+        badge = "missing"
+
+    log_dir = logs_dir / problem_id
+    events_path = event_path(log_dir)
+    latest_type: Optional[str] = None
+    latest_at: Optional[str] = None
+    if events_path.is_file():
+        for event in iter_events(log_dir):
+            latest_type = event.get("event_type")
+            latest_at = event.get("timestamp_utc")
+    last_update_display = _format_last_update(latest_at, log_dir, result_dir)
+    return ResultStatus(
+        problem_id=problem_id,
+        source=source,
+        badge=badge,
+        latest_event_type=latest_type,
+        latest_event_at=latest_at,
+        last_update_display=last_update_display,
+    )
+
+
+def _format_last_update(
+    latest_event_at: Optional[str], log_dir: Path, result_dir: Path
+) -> str:
+    """Return a short human-readable "last update" string for the index.
+
+    We prefer the latest event timestamp; if there are no events yet we
+    fall back to the most recent mtime across the result and log
+    directories. Returns ``"never"`` when nothing exists.
+    """
+    if latest_event_at:
+        return _short_timestamp(latest_event_at)
+    candidates: List[Path] = []
+    for directory in (log_dir, result_dir):
+        if directory.is_dir():
+            for path in directory.rglob("*"):
+                if path.is_file():
+                    candidates.append(path)
+    if not candidates:
+        return "never"
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return _format_mtime(latest.stat().st_mtime)
+
+
+def _short_timestamp(iso_timestamp: str) -> str:
+    if not isinstance(iso_timestamp, str) or "T" not in iso_timestamp:
+        return iso_timestamp or ""
+    time_part = iso_timestamp.split("T", 1)[1]
+    return time_part[:8]
+
+
+def _format_mtime(mtime: float) -> str:
+    dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+    return dt.strftime("%H:%M:%S UTC")
+
+
 def build_results_viewer(config: RethlasConfig) -> ViewerBuild:
     generation_dir = config.paths.generation_dir
     results_dir = generation_dir / "results"
+    logs_dir = generation_dir / "logs"
     output_dir = generation_dir / "viewer"
     pages_dir = output_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
@@ -38,7 +122,11 @@ def build_results_viewer(config: RethlasConfig) -> ViewerBuild:
         (pages_dir / f"{slug}.html").write_text(page_html, encoding="utf-8")
         pages.append((problem_id, f"pages/{slug}.html", source.name))
 
-    index_html = _index_shell(pages)
+    statuses = [
+        _problem_status_for_viewer(problem_id, results_dir, logs_dir)
+        for problem_id, _href, _source in pages
+    ]
+    index_html = _index_shell(pages, statuses)
     (output_dir / "index.html").write_text(index_html, encoding="utf-8")
     return ViewerBuild(output_dir=output_dir, page_count=len(pages))
 
@@ -147,16 +235,44 @@ def _strip_outer_markdown_fence(text: str) -> str:
     return text
 
 
-def _index_shell(pages: list[tuple[str, str, str]]) -> str:
+def _index_shell(
+    pages: list[tuple[str, str, str]],
+    statuses: Optional[List[ResultStatus]] = None,
+) -> str:
+    statuses = statuses or []
+    by_problem = {status.problem_id: status for status in statuses}
     if pages:
-        items = "\n".join(
-            f'<li><a href="{html.escape(href)}">{html.escape(problem_id)}</a> '
-            f'<span>{html.escape(source)}</span></li>'
-            for problem_id, href, source in pages
-        )
+        rows = []
+        for problem_id, href, source in pages:
+            status = by_problem.get(problem_id)
+            badge = status.badge if status else "missing"
+            latest_event = status.latest_event_type if status else None
+            last_update = status.last_update_display if status else "never"
+            events_href = f"../logs/{problem_id}/events.jsonl"
+            events_link = (
+                f'<a class="events" href="{html.escape(events_href)}">events.jsonl</a>'
+                if status and status.has_events
+                else ""
+            )
+            rows.append(
+                "<li>"
+                f'<a class="title" href="{html.escape(href)}">{html.escape(problem_id)}</a> '
+                f'<span class="badge badge-{html.escape(badge)}">{html.escape(badge)}</span> '
+                f'<span class="meta">last update: {html.escape(last_update)}</span> '
+                f'<span class="meta">latest event: {html.escape(latest_event or "—")}</span> '
+                f"{events_link}"
+                "</li>"
+            )
+        items = "\n".join(rows)
     else:
         items = "<li>No generated results yet.</li>"
-    body = f"<h1>Rethlas Results</h1><ul class=\"results\">{items}</ul>"
+    body = (
+        "<h1>Rethlas Results</h1>"
+        f'<p class="hint">Showing {len(pages)} result(s). '
+        "Badges reflect the latest status on disk. The list is regenerated on every "
+        "build; live-tail progress with <code>python -m rethlas.cli watch &lt;problem&gt;</code>.</p>"
+        f'<ul class="results">{items}</ul>'
+    )
     return _page_shell(title="Rethlas Results", body=body, home_href=None)
 
 
@@ -179,9 +295,17 @@ def _page_shell(title: str, body: str, home_href: str | None) -> str:
     h1, h2, h3 {{ line-height: 1.25; }}
     p {{ line-height: 1.7; }}
     pre {{ overflow: auto; padding: 16px; background: #111827; color: #f9fafb; border-radius: 6px; }}
-    ul.results {{ padding-left: 20px; }}
-    ul.results li {{ margin: 10px 0; }}
-    ul.results span {{ color: #6b7280; margin-left: 8px; font-size: 0.9em; }}
+    ul.results {{ list-style: none; padding-left: 0; }}
+    ul.results li {{ margin: 14px 0; padding: 12px 16px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fafbfc; }}
+    ul.results .title {{ font-weight: 600; color: #111827; text-decoration: none; margin-right: 10px; }}
+    ul.results .title:hover {{ text-decoration: underline; }}
+    ul.results .meta {{ color: #6b7280; margin-left: 12px; font-size: 0.88em; }}
+    ul.results .events {{ color: #2563eb; margin-left: 12px; font-size: 0.85em; }}
+    ul.results .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 6px; vertical-align: middle; }}
+    .badge-verified {{ background: #d1fae5; color: #065f46; }}
+    .badge-draft {{ background: #fef3c7; color: #92400e; }}
+    .badge-missing {{ background: #e5e7eb; color: #374151; }}
+    .hint {{ color: #4b5563; font-size: 0.95em; margin-bottom: 16px; }}
   </style>
 </head>
 <body>

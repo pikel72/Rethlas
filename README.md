@@ -303,24 +303,49 @@ Current behavior:
 
 ## Run Control And Progress
 
-Current runs are foreground processes: stop them with `Ctrl+C`, then inspect the
-preserved state with:
+Rethlas ships with a small file-backed control surface for long runs. All
+commands write/read the same `events.jsonl` and jobs registry, so they
+work the same on Windows and Linux.
+
+Watch live progress in the terminal:
+
+```bash
+python -m rethlas.cli tail example           # follow the event stream
+python -m rethlas.cli watch example          # exit 0 when verified or run_failed
+python -m rethlas.cli tail example --json    # JSONL stream for piping
+```
+
+Run in the background and control it from another terminal:
+
+```bash
+python -m rethlas.cli run example --model deepseek --background
+python -m rethlas.cli jobs
+python -m rethlas.cli tail example
+python -m rethlas.cli stop example
+```
+
+Resume after a crash, sleep, or Ctrl+C:
 
 ```bash
 python -m rethlas.cli status example
+python -m rethlas.cli resume example --model deepseek
 ```
 
-Rethlas writes structured progress events to:
+Streaming output: LiteLLM generation supports `stream=True` and emits
+one `model_delta` event per chunk, with a graceful fallback to a single
+message-level call when the provider does not support streaming tools.
+Use `tail --deltas` to see the deltas as they arrive.
 
-```text
-agents/generation/logs/{problem_id}/events.jsonl
-```
+Stop semantics for background jobs:
 
-The next control-layer work is planned in
-`docs/job-control-and-streaming-plan.md`: background jobs, `jobs` / `tail` /
-`watch` / `stop` / `resume` commands, richer model/tool streaming, and recovery
-after sleep or terminal interruption. The plan intentionally does not include
-sleep prevention.
+1. Mark the job as `stopping` in the registry.
+2. Send `CTRL_BREAK_EVENT` (Windows) or `SIGINT` to the process group
+   (POSIX).
+3. Escalate to `TerminateProcess` / `SIGTERM`, then `kill`, with grace
+   periods between each step.
+
+Rethlas intentionally does not block system sleep. The `--resume` flow
+is the supported recovery path after wake.
 
 ## References
 

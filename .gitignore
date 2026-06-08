@@ -19,6 +19,7 @@ agents/generation/downloads/
 agents/generation/logs/
 agents/generation/memory/
 agents/generation/results/
+agents/generation/jobs/
 agents/verification/memory/
 agents/verification/results/
 

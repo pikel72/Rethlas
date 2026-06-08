@@ -29,12 +29,13 @@ def run_native_generation(
     request: RuntimeRequest,
     *,
     stream: bool = True,
+    resume: bool = False,
 ) -> NativeGenerationResult:
     registry = build_generation_tool_registry(config)
     append_event(
         problem.log_dir,
         "native_generation_started",
-        {"provider": request.provider.name, "model": request.model.name},
+        {"provider": request.provider.name, "model": request.model.name, "resumed": resume},
     )
     registry.call(
         "memory_init",
@@ -45,6 +46,7 @@ def run_native_generation(
                 "runtime_provider": request.provider.name,
                 "runtime_model": request.model.name,
                 "native_loop": True,
+                "resumed": resume,
             },
         },
     )
@@ -53,7 +55,11 @@ def run_native_generation(
         {
             "problem_id": problem.problem_id,
             "channel": "events",
-            "record": {"event_type": "native_generation_started", "model": request.model.name},
+            "record": {
+                "event_type": "native_generation_started",
+                "model": request.model.name,
+                "resumed": resume,
+            },
         },
     )
 
@@ -100,7 +106,10 @@ def run_native_generation(
         )
 
     try:
-        draft = _run_litellm_tool_loop(config, problem, refs, request, registry, stream=stream)
+        draft = _run_litellm_tool_loop(
+            config, problem, refs, request, registry,
+            stream=stream, resume=resume,
+        )
     except Exception as exc:
         append_event(
             problem.log_dir,
@@ -161,6 +170,8 @@ def _run_litellm_tool_loop(
     *,
     stream: bool,
     max_iterations: int = 16,
+    use_provider_streaming: bool = True,
+    resume: bool = False,
 ) -> str:
     try:
         import litellm
@@ -169,7 +180,7 @@ def _run_litellm_tool_loop(
 
     messages: list[dict] = [
         {"role": "system", "content": _native_generation_system_prompt(config)},
-        {"role": "user", "content": _native_generation_user_prompt(config, problem, refs)},
+        {"role": "user", "content": _native_generation_user_prompt(config, problem, refs, resume=resume)},
     ]
     transcript: list[str] = []
     tools = registry.schemas() if request.model.supports_tools else None
@@ -181,19 +192,70 @@ def _run_litellm_tool_loop(
             completion_kwargs["messages"] = messages
             if tools is not None:
                 completion_kwargs["tools"] = tools
-            response = litellm.completion(**completion_kwargs)
-            message = response.choices[0].message
-            content = getattr(message, "content", None) or ""
-            tool_calls = getattr(message, "tool_calls", None) or []
-            transcript.append(f"\n\n## iteration {iteration}\n{content}")
-            if content and stream:
+
+            content = ""
+            tool_calls: list = []
+            finish_reason = None
+            should_stream = use_provider_streaming and request.model.supports_streaming
+            if should_stream:
+                try:
+                    completion_kwargs["stream"] = True
+                    chunks = litellm.completion(**completion_kwargs)
+                    for chunk in chunks:
+                        delta = _extract_stream_delta(chunk)
+                        if delta:
+                            content += delta
+                            append_event(
+                                problem.log_dir,
+                                "model_delta",
+                                {"iteration": iteration, "delta": delta},
+                            )
+                            if stream:
+                                _stream_text(delta, end="")
+                        if getattr(chunk, "choices", None):
+                            choice = chunk.choices[0]
+                            finish_reason = getattr(choice, "finish_reason", None)
+                            stream_tool_calls = getattr(choice.delta, "tool_calls", None) if hasattr(choice, "delta") else None
+                            if stream_tool_calls:
+                                tool_calls = _merge_streaming_tool_calls(tool_calls, stream_tool_calls)
+                except Exception as exc:
+                    # Some providers don't support streaming + tools together
+                    # (or the user's proxy doesn't). Fall back to a single
+                    # message-level call so the run still completes.
+                    append_event(
+                        problem.log_dir,
+                        "model_delta_fallback",
+                        {"iteration": iteration, "error": str(exc)},
+                    )
+                    completion_kwargs.pop("stream", None)
+                    response = litellm.completion(**completion_kwargs)
+                    message = response.choices[0].message
+                    content = getattr(message, "content", None) or ""
+                    tool_calls = getattr(message, "tool_calls", None) or []
+            else:
+                response = litellm.completion(**completion_kwargs)
+                message = response.choices[0].message
+                content = getattr(message, "content", None) or ""
+                tool_calls = getattr(message, "tool_calls", None) or []
+
+            if stream and content and should_stream:
+                # Close the streamed line so the next tool/iteration starts cleanly.
+                _stream_text("\n", end="")
+            elif content and stream:
                 _stream_text(content)
+
+            transcript.append(f"\n\n## iteration {iteration}\n{content}")
+            append_event(
+                problem.log_dir,
+                "model_finished",
+                {"iteration": iteration, "finish_reason": finish_reason, "chars": len(content)},
+            )
 
             if not tool_calls:
                 _write_transcript(request.log_path, transcript)
                 return content
 
-            messages.append(_message_to_dict(message))
+            messages.append(_message_to_dict_assistant(content, tool_calls))
             for tool_call in tool_calls:
                 function = tool_call.function
                 name = function.name
@@ -222,17 +284,107 @@ def _run_litellm_tool_loop(
     raise RuntimeError(f"native generation exceeded {max_iterations} model iterations")
 
 
+def _extract_stream_delta(chunk) -> str:
+    """Best-effort extraction of a single streamed text delta from a chunk.
+
+    LiteLLM normalizes most providers, but a few still ship raw ``deltas`` or
+    ``text`` payloads. We try the common shapes and return an empty string
+    when the chunk carries no text.
+    """
+    try:
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return ""
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return ""
+        content = getattr(delta, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") for part in content
+                if isinstance(part, dict)
+            )
+    except (AttributeError, IndexError):
+        return ""
+    return ""
+
+
+def _merge_streaming_tool_calls(accumulated: list, incoming) -> list:
+    """Accumulate tool call deltas from a streamed response.
+
+    Some providers send tool calls split across many chunks; each one may
+    only carry the function name, the id, or a slice of the arguments. We
+    keep a stable list keyed by index so the caller can iterate once at the
+    end of the stream.
+    """
+    by_index: dict[int, dict] = {}
+    for entry in accumulated:
+        by_index[entry["_index"]] = entry
+    for call in incoming:
+        index = getattr(call, "index", None)
+        if index is None:
+            index = len(by_index)
+        entry = by_index.setdefault(
+            index,
+            {
+                "_index": index,
+                "id": None,
+                "type": "function",
+                "function": {"name": "", "arguments": ""},
+            },
+        )
+        call_id = getattr(call, "id", None)
+        if call_id:
+            entry["id"] = call_id
+        function = getattr(call, "function", None)
+        if function is not None:
+            name = getattr(function, "name", None)
+            if name:
+                entry["function"]["name"] = name
+            arguments = getattr(function, "arguments", None)
+            if arguments:
+                entry["function"]["arguments"] += arguments
+    return [by_index[key] for key in sorted(by_index)]
+
+
+def _message_to_dict_assistant(content: str, tool_calls: list) -> dict:
+    """Serialize an assistant turn (possibly from streaming) for the message log."""
+    payload: dict = {"role": "assistant", "content": content}
+    if tool_calls:
+        serialized = []
+        for entry in tool_calls:
+            if entry.get("_index") is not None:
+                serialized.append(
+                    {
+                        "id": entry.get("id"),
+                        "type": entry.get("type", "function"),
+                        "function": {
+                            "name": entry["function"]["name"],
+                            "arguments": entry["function"]["arguments"],
+                        },
+                    }
+                )
+            elif hasattr(entry, "model_dump"):
+                serialized.append(entry.model_dump(exclude_none=True))
+            elif isinstance(entry, dict):
+                serialized.append(entry)
+        payload["tool_calls"] = serialized
+    return payload
+
+
 def _write_transcript(log_path: Path, transcript: list[str]) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("\n".join(transcript), encoding="utf-8")
 
 
-def _stream_text(text: str) -> None:
+def _stream_text(text: str, *, end: str = "\n") -> None:
     try:
-        print(text)
+        print(text, end=end, flush=True)
     except UnicodeEncodeError:
         encoding = sys.stdout.encoding or "utf-8"
-        sys.stdout.buffer.write((text + "\n").encode(encoding, errors="replace"))
+        sys.stdout.buffer.write((text + end).encode(encoding, errors="replace"))
         sys.stdout.buffer.flush()
 
 
@@ -267,9 +419,19 @@ def _native_generation_user_prompt(
     config: RethlasConfig,
     problem: ProblemPaths,
     refs: ReferencePreparation,
+    *,
+    resume: bool = False,
 ) -> str:
     problem_text = problem.problem_file.read_text(encoding="utf-8")
     reference_text = _read_reference_text(problem.reference_dir)
+    resume_note = (
+        "\n\nThis run is resuming a previous attempt. Before producing new content, "
+        "use the memory tools to inspect the existing memory, results, and log "
+        "directories for this problem. Build on what is already there; do not "
+        "restart from scratch."
+        if resume
+        else ""
+    )
     return (
         f"Problem id: {problem.problem_id}\n"
         f"Problem file: {problem.problem_path}\n"
@@ -280,22 +442,8 @@ def _native_generation_user_prompt(
         f"{problem_text}\n\n"
         "Reference excerpts:\n"
         f"{reference_text}\n"
+        f"{resume_note}"
     )
-
-
-def _message_to_dict(message) -> dict:
-    if hasattr(message, "model_dump"):
-        return message.model_dump(exclude_none=True)
-    if isinstance(message, dict):
-        return message
-    payload = {"role": "assistant", "content": getattr(message, "content", "")}
-    tool_calls = getattr(message, "tool_calls", None)
-    if tool_calls:
-        payload["tool_calls"] = [
-            call.model_dump(exclude_none=True) if hasattr(call, "model_dump") else call
-            for call in tool_calls
-        ]
-    return payload
 
 
 def _read_reference_text(reference_dir: Path, max_chars: int = 12000) -> str:

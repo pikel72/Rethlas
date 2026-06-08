@@ -28,6 +28,7 @@ agents/generation/data/**/*.refs/.extracted/
 # Site build output
 agents/generation/site/public/
 agents/generation/site/resources/
+agents/generation/viewer/
 
 # OS and editor noise
 .DS_Store

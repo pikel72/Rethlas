@@ -92,6 +92,7 @@ while true; do
   printf '  3. Run included example\n'
   printf '  4. Run a problem\n'
   printf '  5. Dry-run a problem\n'
+  printf '  6. Open results page\n'
   printf '  0. Exit\n\n'
   printf 'Choose an option: '
   read -r choice
@@ -117,6 +118,11 @@ while true; do
       ask_problem
       dry_run_problem "$problem"
       pause_for_user
+      ;;
+    6)
+      print_header "Opening results page"
+      cd "$ROOT_DIR"
+      python3 -m rethlas.cli results-site --open || python -m rethlas.cli results-site --open
       ;;
     0)
       exit 0

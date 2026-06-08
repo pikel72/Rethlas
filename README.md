@@ -337,9 +337,34 @@ agents/generation/tests/run_example.sh
 
 ## Viewing Results In A Browser
 
-`agents/generation/site` contains a Zola site for browsing markdown results with LaTeX math.
+Rethlas includes a no-dependency local results viewer. It reads
+`agents/generation/results/**/blueprint_verified.md` first, falling back to
+`blueprint.md`, and serves the generated pages at `http://127.0.0.1:3264`.
 
-Install Zola, then from `agents/generation/`:
+```bash
+python -m rethlas.cli results-site --open
+```
+
+PowerShell wrapper:
+
+```powershell
+.\rethlas.ps1 results-site --open
+```
+
+You can also build the static HTML without starting a server:
+
+```bash
+python -m rethlas.cli results-site --sync-only
+```
+
+Then open:
+
+```text
+agents/generation/viewer/index.html
+```
+
+The older Zola site is still available under `agents/generation/site`. If Zola
+is installed, from `agents/generation/` you can run:
 
 ```bash
 ./site/serve.sh

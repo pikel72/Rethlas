@@ -14,6 +14,7 @@ echo  2. Start verification service in a new window
 echo  3. Run included example
 echo  4. Run a problem
 echo  5. Dry-run a problem
+echo  6. Open results page
 echo  0. Exit
 echo.
 set /p "CHOICE=Choose an option: "
@@ -23,6 +24,7 @@ if "%CHOICE%"=="2" goto verifier
 if "%CHOICE%"=="3" goto run_example
 if "%CHOICE%"=="4" goto run_problem
 if "%CHOICE%"=="5" goto dry_run_problem
+if "%CHOICE%"=="6" goto results_page
 if "%CHOICE%"=="0" goto end
 
 echo.
@@ -67,6 +69,15 @@ goto run_selected
 :dry_run_problem
 call :ask_problem
 goto dry_run_selected
+
+:results_page
+call :print_header "Opening results page"
+echo The page will be served at http://127.0.0.1:3264
+echo Close the PowerShell window or press Ctrl+C there to stop the page server.
+echo.
+start "Rethlas results" powershell -NoExit -NoProfile -ExecutionPolicy Bypass -File "%ROOT%rethlas.ps1" results-site --open
+pause
+goto menu
 
 :run_selected
 call :print_header "Running %PROBLEM%"

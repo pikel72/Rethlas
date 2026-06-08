@@ -19,6 +19,7 @@ from .runtime import backend_for, build_plan, build_request, missing_runtime_dep
 from .status import inspect_problem_status
 from .tools import build_generation_tool_registry
 from .subagents import SubAgentRunner, SubAgentTask
+from .viewer import build_results_viewer, serve_results_viewer
 
 
 def build_generation_prompt(problem_path: str, problem_id: str, reference_prompt: str) -> str:
@@ -365,6 +366,17 @@ def cmd_subagent_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_results_site(args: argparse.Namespace) -> int:
+    config = load_config()
+    if args.sync_only:
+        build = build_results_viewer(config)
+        print(f"Synced {build.page_count} result page(s) into {build.output_dir}")
+        print(f"Open {build.output_dir / 'index.html'}")
+        return 0
+    serve_results_viewer(config, port=args.port, open_browser=args.open)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rethlas")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -397,6 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     subagent_check = subparsers.add_parser("subagent-check", help="Run a deterministic sub-agent constraint check")
     subagent_check.set_defaults(func=cmd_subagent_check)
+
+    results_site = subparsers.add_parser("results-site", help="Serve generated proof results in a browser")
+    results_site.add_argument("--port", type=int, default=3264)
+    results_site.add_argument("--open", action="store_true", help="Open the results page in the default browser")
+    results_site.add_argument("--sync-only", action="store_true", help="Build static HTML without starting a server")
+    results_site.set_defaults(func=cmd_results_site)
 
     plan = subparsers.add_parser("plan", help="Print the selected runtime plan")
     plan.add_argument("--role", choices=["generation", "verification"], default="generation")

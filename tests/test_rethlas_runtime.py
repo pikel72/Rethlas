@@ -11,7 +11,12 @@ from rethlas.agent_loop import _run_litellm_tool_loop
 from rethlas.config import ModelConfig, load_config
 from rethlas.problems import normalize_problem
 from rethlas.references import ReferencePreparation
-from rethlas.runtime import _extract_json_object, _validate_verification_payload, build_request
+from rethlas.runtime import (
+    _extract_json_object,
+    _normalize_verification_payload,
+    _validate_verification_payload,
+    build_request,
+)
 from rethlas.subagents import SubAgentRunner, SubAgentTask
 from rethlas.tools import build_generation_tool_registry
 
@@ -137,6 +142,17 @@ def test_verification_json_validation():
     )
     _validate_verification_payload(payload)
     assert payload["verdict"] == "correct"
+
+
+def test_verification_payload_normalizes_empty_repair_hint_list():
+    payload = {
+        "verification_report": {"summary": "ok", "critical_errors": [], "gaps": []},
+        "verdict": "correct",
+        "repair_hints": [],
+    }
+    _normalize_verification_payload(payload)
+    _validate_verification_payload(payload)
+    assert payload["repair_hints"] == ""
 
 
 def test_generation_tool_registry_memory_roundtrip():

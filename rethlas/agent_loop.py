@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import sys
 from typing import Optional
 
 from .config import RethlasConfig
@@ -159,7 +160,7 @@ def _run_litellm_tool_loop(
     registry,
     *,
     stream: bool,
-    max_iterations: int = 8,
+    max_iterations: int = 16,
 ) -> str:
     try:
         import litellm
@@ -173,48 +174,66 @@ def _run_litellm_tool_loop(
     transcript: list[str] = []
     tools = registry.schemas() if request.model.supports_tools else None
 
-    for iteration in range(1, max_iterations + 1):
-        append_event(problem.log_dir, "model_started", {"iteration": iteration, "model": request.model.name})
-        completion_kwargs = litellm_completion_kwargs(request)
-        completion_kwargs["messages"] = messages
-        if tools is not None:
-            completion_kwargs["tools"] = tools
-        response = litellm.completion(**completion_kwargs)
-        message = response.choices[0].message
-        content = getattr(message, "content", None) or ""
-        tool_calls = getattr(message, "tool_calls", None) or []
-        transcript.append(f"\n\n## iteration {iteration}\n{content}")
-        if content and stream:
-            print(content)
+    try:
+        for iteration in range(1, max_iterations + 1):
+            append_event(problem.log_dir, "model_started", {"iteration": iteration, "model": request.model.name})
+            completion_kwargs = litellm_completion_kwargs(request)
+            completion_kwargs["messages"] = messages
+            if tools is not None:
+                completion_kwargs["tools"] = tools
+            response = litellm.completion(**completion_kwargs)
+            message = response.choices[0].message
+            content = getattr(message, "content", None) or ""
+            tool_calls = getattr(message, "tool_calls", None) or []
+            transcript.append(f"\n\n## iteration {iteration}\n{content}")
+            if content and stream:
+                _stream_text(content)
 
-        if not tool_calls:
-            request.log_path.parent.mkdir(parents=True, exist_ok=True)
-            request.log_path.write_text("\n".join(transcript), encoding="utf-8")
-            return content
+            if not tool_calls:
+                _write_transcript(request.log_path, transcript)
+                return content
 
-        messages.append(_message_to_dict(message))
-        for tool_call in tool_calls:
-            function = tool_call.function
-            name = function.name
-            args_json = function.arguments or "{}"
-            append_event(problem.log_dir, "tool_started", {"iteration": iteration, "tool": name})
-            result = registry.call_json(name, args_json)
-            payload = result.result if result.ok else {"error": result.error}
-            append_event(
-                problem.log_dir,
-                "tool_finished",
-                {"iteration": iteration, "tool": name, "ok": result.ok},
-            )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(payload, ensure_ascii=False),
-                }
-            )
-            transcript.append(f"\n\n### tool {name}\n{json.dumps(payload, ensure_ascii=False)}")
+            messages.append(_message_to_dict(message))
+            for tool_call in tool_calls:
+                function = tool_call.function
+                name = function.name
+                args_json = function.arguments or "{}"
+                append_event(problem.log_dir, "tool_started", {"iteration": iteration, "tool": name})
+                result = registry.call_json(name, args_json)
+                payload = result.result if result.ok else {"error": result.error}
+                append_event(
+                    problem.log_dir,
+                    "tool_finished",
+                    {"iteration": iteration, "tool": name, "ok": result.ok},
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(payload, ensure_ascii=False),
+                    }
+                )
+                transcript.append(f"\n\n### tool {name}\n{json.dumps(payload, ensure_ascii=False)}")
+    except Exception:
+        _write_transcript(request.log_path, transcript)
+        raise
 
+    _write_transcript(request.log_path, transcript)
     raise RuntimeError(f"native generation exceeded {max_iterations} model iterations")
+
+
+def _write_transcript(log_path: Path, transcript: list[str]) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("\n".join(transcript), encoding="utf-8")
+
+
+def _stream_text(text: str) -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        sys.stdout.buffer.write((text + "\n").encode(encoding, errors="replace"))
+        sys.stdout.buffer.flush()
 
 
 def _native_generation_prompt(

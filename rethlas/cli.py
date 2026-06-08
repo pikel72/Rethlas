@@ -320,7 +320,10 @@ def cmd_verify_server(args: argparse.Namespace) -> int:
     config = load_config()
     verification_dir = config.paths.verification_dir
     python_exe = verification_dir / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
-    python = str(python_exe) if python_exe.exists() else sys.executable
+    if python_exe.exists() and _python_can_import(python_exe, "uvicorn") and _python_can_import(python_exe, "litellm"):
+        python = str(python_exe)
+    else:
+        python = sys.executable
     cmd = [
         python,
         "-m",
@@ -336,6 +339,16 @@ def cmd_verify_server(args: argparse.Namespace) -> int:
         return 0
     completed = subprocess.run(cmd, cwd=verification_dir, check=False)
     return completed.returncode
+
+
+def _python_can_import(python: Path, module: str) -> bool:
+    completed = subprocess.run(
+        [str(python), "-c", f"import {module}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.returncode == 0
 
 
 def cmd_subagent_check(args: argparse.Namespace) -> int:

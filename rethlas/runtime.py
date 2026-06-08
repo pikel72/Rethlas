@@ -256,6 +256,7 @@ class LiteLLMBackend(RuntimeBackend):
         if request.role == "verification":
             try:
                 payload = _extract_json_object(content)
+                _normalize_verification_payload(payload)
                 _validate_verification_payload(payload)
                 output_path = request.log_path.parent / "verification.json"
                 output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -514,3 +515,8 @@ def _validate_verification_payload(payload: Dict[str, Any]) -> None:
         raise ValueError("correct verdict requires no findings and empty repair_hints")
     if verdict == "wrong" and not repair_hints.strip():
         raise ValueError("wrong verdict requires non-empty repair_hints")
+
+
+def _normalize_verification_payload(payload: Dict[str, Any]) -> None:
+    if payload.get("repair_hints") == []:
+        payload["repair_hints"] = ""

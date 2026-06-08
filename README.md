@@ -301,6 +301,27 @@ Current behavior:
 - LiteLLM generation has a native tool-call loop, writes `blueprint.md`, and performs one verifier pass when the verification service is reachable.
 - Native OpenAI/Anthropic provider kinds are placeholders for future direct API implementations; use `provider = "litellm"` today.
 
+## Run Control And Progress
+
+Current runs are foreground processes: stop them with `Ctrl+C`, then inspect the
+preserved state with:
+
+```bash
+python -m rethlas.cli status example
+```
+
+Rethlas writes structured progress events to:
+
+```text
+agents/generation/logs/{problem_id}/events.jsonl
+```
+
+The next control-layer work is planned in
+`docs/job-control-and-streaming-plan.md`: background jobs, `jobs` / `tail` /
+`watch` / `stop` / `resume` commands, richer model/tool streaming, and recovery
+after sleep or terminal interruption. The plan intentionally does not include
+sleep prevention.
+
 ## References
 
 To attach local references to a problem, create a sibling `.refs` directory:

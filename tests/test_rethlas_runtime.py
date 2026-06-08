@@ -5,9 +5,9 @@ import os
 import pytest
 from fastapi import HTTPException
 
-from rethlas.config import load_config
+from rethlas.config import ModelConfig, load_config
 from rethlas.problems import normalize_problem
-from rethlas.runtime import _extract_json_object, _validate_verification_payload
+from rethlas.runtime import LiteLLMBackend, _extract_json_object, _validate_verification_payload
 from rethlas.subagents import SubAgentRunner, SubAgentTask
 from rethlas.tools import build_generation_tool_registry
 
@@ -39,6 +39,42 @@ def test_runtime_config_has_multi_model_profiles(monkeypatch):
     assert claude.provider == "litellm"
     assert claude.compat == "anthropic"
     assert claude.model == "claude-opus-4-5"
+
+
+def test_litellm_model_id_prefixes_openai_compat():
+    """openai-compat vendors (deepseek/qwen/glm/kimi/doubao/siliconflow)
+    need the `openai/` prefix so LiteLLM routes to the openai-compatible
+    provider instead of bailing with "LLM Provider NOT provided"."""
+    from rethlas.runtime import litellm_model_id
+    model = ModelConfig(name="deepseek", provider="litellm", model="deepseek-v4-pro", compat="openai")
+    assert litellm_model_id(model) == "openai/deepseek-v4-pro"
+
+
+def test_litellm_model_id_prefixes_anthropic_compat():
+    from rethlas.runtime import litellm_model_id
+    model = ModelConfig(name="claude", provider="litellm", model="claude-opus-4.8", compat="anthropic")
+    assert litellm_model_id(model) == "anthropic/claude-opus-4.8"
+
+
+def test_litellm_model_id_preserves_user_prefix():
+    """OpenRouter users typically write `anthropic/claude-opus-4.8` (vendor/model)
+    in `OPENROUTER_MODEL`. We must not double-prefix."""
+    from rethlas.runtime import litellm_model_id
+    model = ModelConfig(
+        name="openrouter",
+        provider="litellm",
+        model="anthropic/claude-opus-4.8",
+        compat="openai",
+    )
+    assert litellm_model_id(model) == "anthropic/claude-opus-4.8"
+
+
+def test_litellm_model_id_passthrough_without_compat():
+    """When `compat` is None (e.g. some custom config), pass the model name
+    through unchanged."""
+    from rethlas.runtime import litellm_model_id
+    model = ModelConfig(name="x", provider="litellm", model="gpt-5.5", compat=None)
+    assert litellm_model_id(model) == "gpt-5.5"
 
 
 def test_verification_json_validation():

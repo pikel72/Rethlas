@@ -9,7 +9,7 @@ from .config import RethlasConfig
 from .events import append_event
 from .problems import ProblemPaths
 from .references import ReferencePreparation
-from .runtime import RuntimeRequest, _litellm_options
+from .runtime import RuntimeRequest, litellm_completion_kwargs
 from .tools import build_generation_tool_registry
 
 
@@ -175,13 +175,11 @@ def _run_litellm_tool_loop(
 
     for iteration in range(1, max_iterations + 1):
         append_event(problem.log_dir, "model_started", {"iteration": iteration, "model": request.model.name})
-        response = litellm.completion(
-            model=request.model.model,
-            messages=messages,
-            tools=tools,
-            timeout=request.timeout_seconds,
-            **_litellm_options(request.model),
-        )
+        completion_kwargs = litellm_completion_kwargs(request)
+        completion_kwargs["messages"] = messages
+        if tools is not None:
+            completion_kwargs["tools"] = tools
+        response = litellm.completion(**completion_kwargs)
         message = response.choices[0].message
         content = getattr(message, "content", None) or ""
         tool_calls = getattr(message, "tool_calls", None) or []

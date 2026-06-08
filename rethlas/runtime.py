@@ -199,6 +199,9 @@ class LiteLLMBackend(RuntimeBackend):
     def _api_base_url(self, request: RuntimeRequest) -> Optional[str]:
         return request.model.api_base or request.provider.base_url
 
+    def _litellm_model_id(self, request: RuntimeRequest) -> str:
+        return litellm_model_id(request.model)
+
     def build_plan(self, request: RuntimeRequest) -> RuntimePlan:
         notes = ["LiteLLM backend supports plain model calls."]
         if request.role == "verification":
@@ -235,22 +238,8 @@ class LiteLLMBackend(RuntimeBackend):
         if request.role == "verification":
             prompt = _verification_json_prompt(request.prompt)
 
-        completion_kwargs: Dict[str, Any] = {
-            "model": request.model.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "timeout": request.timeout_seconds,
-        }
-        api_key_env = self._api_key_env(request)
-        if api_key_env:
-            api_key = os.getenv(api_key_env)
-            if api_key:
-                completion_kwargs["api_key"] = api_key
-        api_base = self._api_base_url(request)
-        if api_base:
-            completion_kwargs["api_base"] = api_base
-        if request.model.compat:
-            completion_kwargs["custom_llm_provider"] = request.model.compat
-        completion_kwargs.update(_litellm_options(request.model))
+        completion_kwargs = litellm_completion_kwargs(request)
+        completion_kwargs["messages"] = [{"role": "user", "content": prompt}]
 
         response = litellm.completion(**completion_kwargs)
         content = response.choices[0].message.content or ""
@@ -416,6 +405,30 @@ def _extract_run_id(prompt: str) -> str:
     return "mock_run"
 
 
+def litellm_completion_kwargs(request: RuntimeRequest) -> Dict[str, Any]:
+    """Build the common kwargs shared by both LiteLLM call sites
+    (the simple backend `run` and the agent_loop tool loop).
+
+    Centralizing this here ensures the model id prefix, api_key, and
+    api_base stay in sync.
+    """
+    backend = LiteLLMBackend()
+    kwargs: Dict[str, Any] = {
+        "model": backend._litellm_model_id(request),
+        "timeout": request.timeout_seconds,
+    }
+    api_key_env = backend._api_key_env(request)
+    if api_key_env:
+        api_key = os.getenv(api_key_env)
+        if api_key:
+            kwargs["api_key"] = api_key
+    api_base = backend._api_base_url(request)
+    if api_base:
+        kwargs["api_base"] = api_base
+    kwargs.update(_litellm_options(request.model))
+    return kwargs
+
+
 def _litellm_options(model: ModelConfig) -> Dict[str, Any]:
     options: Dict[str, Any] = {}
     if model.max_tokens is not None:
@@ -427,6 +440,23 @@ def _litellm_options(model: ModelConfig) -> Dict[str, Any]:
     if model.reasoning_effort is not None:
         options["reasoning_effort"] = model.reasoning_effort
     return options
+
+
+def litellm_model_id(model: ModelConfig) -> str:
+    """Build the model id LiteLLM expects.
+
+    LiteLLM needs the form ``<provider>/<model>`` to route to the right
+    backend. Our env presets carry the protocol in ``compat`` (``openai``
+    or ``anthropic``), so for the common case we auto-prefix with
+    ``compat/``. Users who already include a provider prefix in
+    ``<VENDOR>_MODEL`` (e.g. OpenRouter's
+    ``anthropic/claude-opus-4.8``) get their value passed through.
+    """
+    name = model.model
+    compat = model.compat
+    if compat and "/" not in name:
+        return f"{compat}/{name}"
+    return name
 
 
 def _verification_json_prompt(prompt: str) -> str:

@@ -26,26 +26,19 @@ Optional: create a local environment file for API keys:
 
 ```bash
 cp .env.example .env
+# then fill in the API keys you want to use
 ```
 
-Rethlas does not automatically load `.env`; load it in your shell before running commands.
+Rethlas automatically loads `.env` from the repo root when the CLI starts. Existing
+shell env variables win (so explicit `export FOO=bar` overrides `.env`).
+You can also `source .env` manually if you want the values in your shell too.
 
-Bash/zsh:
-
-```bash
-set -a
-source .env
-set +a
-```
-
-PowerShell users can either set variables manually:
+For Windows PowerShell users who prefer manual setup, the equivalent is:
 
 ```powershell
 $env:OPENAI_API_KEY = "..."
 $env:ANTHROPIC_API_KEY = "..."
 ```
-
-or copy values from `.env.example` into their shell profile or session.
 
 For the default Codex model profile, install Codex CLI:
 

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
-from .config import load_config
+from .config import find_repo_root, load_config, load_dotenv_from_repo_root
 from .presets import BUILTIN_PRESETS, base_url_env_name
 from .agent_loop import run_native_generation
 from .events import append_event
@@ -389,6 +389,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    # Auto-load .env from the repo root so users don't have to `set -a; source .env`
+    # manually before every command. Existing shell env wins (we only set keys that
+    # are not already in os.environ). Library users calling `load_config` directly
+    # can call `load_dotenv_from_repo_root` themselves.
+    try:
+        repo_root = find_repo_root()
+    except FileNotFoundError:
+        repo_root = None
+    if repo_root is not None:
+        load_dotenv_from_repo_root(repo_root)
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

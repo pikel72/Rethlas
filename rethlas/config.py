@@ -188,6 +188,52 @@ def find_repo_root(start: Optional[Path] = None) -> Path:
     raise FileNotFoundError(f"Could not find {CONFIG_FILENAME} above {current}")
 
 
+def _load_dotenv_if_present(path: Path) -> int:
+    """Load KEY=VALUE pairs from a `.env` file into `os.environ` if present.
+
+    - Skips blank lines and lines starting with `#`.
+    - Supports `KEY=value`, `KEY="value"`, `KEY='value'`.
+    - Existing env vars win (does not overwrite) — matches python-dotenv default.
+    - Stops silently if the file doesn't exist.
+    - Skips malformed lines (e.g. lines without `=`) without raising.
+
+    Returns the number of NEW env vars set (i.e. vars that were not already
+    in `os.environ`).
+    """
+    if not path.exists():
+        return 0
+    set_count = 0
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Strip surrounding quotes if present
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        if not key:
+            continue
+        if key in os.environ:
+            continue  # existing env wins
+        os.environ[key] = value
+        set_count += 1
+    return set_count
+
+
+def load_dotenv_from_repo_root(repo_root: Path) -> int:
+    """Load `.env` from the repo root. Used by the CLI at startup so users
+    don't have to `set -a; source .env` manually before every command.
+
+    Library users who import `load_config` directly should call this
+    themselves if they want the same behavior.
+    """
+    return _load_dotenv_if_present(repo_root / ".env")
+
+
 def _load_toml(path: Path) -> Dict[str, Any]:
     if tomllib is None:
         raise RuntimeError("Python 3.11+ is required to read rethlas.toml without extra dependencies")

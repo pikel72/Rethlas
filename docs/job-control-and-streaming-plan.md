@@ -7,24 +7,32 @@ enough state to make interruption understandable and recoverable.
 
 ## Current State
 
-Rethlas already has the pieces needed for a first usable control surface:
+Rethlas now has a first usable control surface:
 
 - `python -m rethlas.cli run <problem>` runs generation in the foreground.
+- `python -m rethlas.cli run <problem> --background` starts a background job.
+- `python -m rethlas.cli jobs` lists file-backed job records.
+- `python -m rethlas.cli stop <problem-or-job>` stops known background jobs.
+- `python -m rethlas.cli tail <problem>` follows the structured event stream.
+- `python -m rethlas.cli watch <problem>` waits until a run is verified or
+  failed.
+- `python -m rethlas.cli resume <problem>` starts a new run over existing
+  memory/results/logs.
 - `python -m rethlas.cli status <problem>` summarizes logs, memory, results,
   and the latest events.
 - Native LiteLLM generation appends structured events to
   `agents/generation/logs/{problem_id}/events.jsonl`.
 - Native LiteLLM generation streams model text to stdout when `--no-live-log`
-  is not used.
+  is not used, and emits `model_delta` events when provider streaming is
+  available.
 - Results are written to `agents/generation/results/{problem_id}/blueprint.md`
   and `blueprint_verified.md`.
 - `python -m rethlas.cli results-site --open` serves generated results in a
-  browser.
+  browser, including status badges and links to raw events.
 
-The missing layer is a first-class job model. Users can start and interrupt a
-foreground process, but there is no durable job registry, no one-command stop,
-no tail/watch command, and no consistent progress stream across Codex CLI,
-LiteLLM, verification, and viewer/server processes.
+The remaining work is hardening and polish: deeper real-provider streaming
+coverage, richer process reconciliation after sleep, better background stop
+telemetry in `events.jsonl`, and stronger viewer integration.
 
 ## Goals
 
@@ -238,7 +246,6 @@ Extend existing commands:
 ```bash
 python -m rethlas.cli run <problem> --background
 python -m rethlas.cli run <problem> --json-events
-python -m rethlas.cli status <problem> --watch
 ```
 
 `--json-events` prints every event as JSONL to stdout for future UI integration.
@@ -299,16 +306,17 @@ Later:
 - show event timeline for each problem
 - link to raw `blueprint.md`, `blueprint_verified.md`, and `events.jsonl`
 
-## Implementation Stages
+## Implementation Stages And Status
 
-### Stage 1: Tail And Watch
+### Stage 1: Tail And Watch - Implemented
 
-Smallest useful increment.
+Implemented in `rethlas/follow.py` and the root CLI.
 
-- Add event-following helpers.
-- Add `tail <problem>`.
-- Add `watch <problem>`.
-- Add tests with temporary `events.jsonl`.
+- Event-following helpers exist.
+- `tail <problem>` exists.
+- `watch <problem>` exists.
+- Tests cover temporary `events.jsonl`, truncation, delayed creation, compact
+  formatting, JSON formatting, and watch-state summarization.
 
 Validation:
 
@@ -318,13 +326,15 @@ python -m rethlas.cli tail example
 python -m rethlas.cli watch example
 ```
 
-### Stage 2: Background Jobs
+### Stage 2: Background Jobs - Implemented
 
-- Add file-backed job registry.
-- Add `run --background`.
-- Add `jobs`.
-- Add `stop`.
-- Add Windows and POSIX process-group handling.
+- File-backed job registry exists in `rethlas/jobs.py`.
+- `run --background` exists.
+- `jobs` exists.
+- `stop` exists.
+- Windows and POSIX process-group handling exist.
+- Tests cover registry roundtrip, ordering, duplicate-running rejection, stop
+  escalation, dead PID handling, and terminal status behavior.
 
 Validation:
 
@@ -334,12 +344,14 @@ python -m rethlas.cli jobs
 python -m rethlas.cli stop example
 ```
 
-### Stage 3: Better Streaming
+### Stage 3: Better Streaming - Partially Implemented
 
-- Add structured `model_delta` events.
-- Try LiteLLM provider streaming for native generation.
-- Keep message-level fallback.
-- Add `--json-events`.
+- Structured `model_delta` events exist.
+- LiteLLM provider streaming is attempted where compatible.
+- Message-level fallback exists.
+- `--json-events` exists.
+- Remaining work: run more long DeepSeek/OpenRouter/Anthropic-compatible tests
+  to characterize which providers support streaming plus tool calls cleanly.
 
 Validation:
 
@@ -347,11 +359,12 @@ Validation:
 python -m rethlas.cli run example --model deepseek --json-events
 ```
 
-### Stage 4: Resume
+### Stage 4: Resume - Implemented
 
-- Add `resume <problem>`.
-- Prompt model to inspect existing memory/results/logs.
-- Record `run_resumed` with previous status.
+- `resume <problem>` exists.
+- Resume prompt tells the model to inspect existing memory/results/logs.
+- `run_resumed` is recorded with previous status.
+- `resume --background` exists.
 
 Validation:
 
@@ -360,11 +373,11 @@ python -m rethlas.cli stop example
 python -m rethlas.cli resume example --model deepseek
 ```
 
-### Stage 5: Results Page Status
+### Stage 5: Results Page Status - Implemented
 
-- Add latest status badges to `results-site`.
-- Add event timeline links.
-- Keep generated viewer files ignored by git.
+- `results-site` adds latest status badges.
+- Generated pages link to `events.jsonl`.
+- Generated viewer files are ignored by git.
 
 Validation:
 

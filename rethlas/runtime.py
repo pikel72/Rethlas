@@ -518,5 +518,8 @@ def _validate_verification_payload(payload: Dict[str, Any]) -> None:
 
 
 def _normalize_verification_payload(payload: Dict[str, Any]) -> None:
-    if payload.get("repair_hints") == []:
+    hints = payload.get("repair_hints")
+    if isinstance(hints, list):
+        payload["repair_hints"] = "\n".join(str(item) for item in hints)
+    elif hints is None:
         payload["repair_hints"] = ""

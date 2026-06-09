@@ -184,9 +184,39 @@ def _run_litellm_tool_loop(
     ]
     transcript: list[str] = []
     tools = registry.schemas() if request.model.supports_tools else None
+    # Track consecutive tool-only iterations to detect a model that keeps
+    # searching instead of committing to a final blueprint. After the model
+    # has spent this many iterations on tool calls without writing substantial
+    # final content, force the next call to skip tools so the model has to
+    # emit a blueprint.
+    search_iterations = 0
+    MAX_SEARCH_ITERATIONS = 6
+    CONTENT_THRESHOLD = 200
 
     try:
         for iteration in range(1, max_iterations + 1):
+            convergence = search_iterations >= MAX_SEARCH_ITERATIONS
+            if convergence:
+                append_event(
+                    problem.log_dir,
+                    "convergence_pressure",
+                    {"iteration": iteration, "search_iterations": search_iterations},
+                )
+                # Inject a user-visible directive that the model should commit
+                # to a blueprint now rather than call more tools.
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You have been searching and exploring for a while. "
+                            "Stop calling tools NOW. Write the final proof blueprint "
+                            "in markdown format as your response. Use everything you "
+                            "have gathered. The blueprint must start with "
+                            "'# theorem <name>' and contain '## statement' and "
+                            "'## proof' sections."
+                        ),
+                    }
+                )
             append_event(problem.log_dir, "model_started", {"iteration": iteration, "model": request.model.name})
             completion_kwargs = litellm_completion_kwargs(request)
             completion_kwargs["messages"] = messages
@@ -252,14 +282,18 @@ def _run_litellm_tool_loop(
             )
 
             if not tool_calls:
+                content = _strip_tool_markup(content)
                 _write_transcript(request.log_path, transcript)
                 return content
 
+            if len(content.strip()) >= CONTENT_THRESHOLD:
+                search_iterations = 0
+            else:
+                search_iterations += 1
+
             messages.append(_message_to_dict_assistant(content, tool_calls))
             for tool_call in tool_calls:
-                function = tool_call.function
-                name = function.name
-                args_json = function.arguments or "{}"
+                call_id, name, args_json = _tool_call_parts(tool_call)
                 append_event(problem.log_dir, "tool_started", {"iteration": iteration, "tool": name})
                 result = registry.call_json(name, args_json)
                 payload = result.result if result.ok else {"error": result.error}
@@ -271,7 +305,7 @@ def _run_litellm_tool_loop(
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": call_id,
                         "content": json.dumps(payload, ensure_ascii=False),
                     }
                 )
@@ -372,6 +406,74 @@ def _message_to_dict_assistant(content: str, tool_calls: list) -> dict:
                 serialized.append(entry)
         payload["tool_calls"] = serialized
     return payload
+
+
+def _strip_tool_markup(content: str) -> str:
+    """Remove tool-call markup that some models emit in their text.
+
+    DeepSeek's chat model uses an internal ``<|DSML|...|>`` tool syntax that
+    it can leak into a final text response when tools are disabled. We strip
+    well-known markers so the blueprint is clean markdown; if the entire
+    content was tool markup we return a small placeholder so the file is
+    never empty.
+    """
+    if not content:
+        return content
+    import re
+
+    # DSML blocks and similar tool markup (consume the surrounding tags).
+    # DeepSeek chat leaks internal tool markup like
+    # <｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls> when its tool
+    # channel is disabled. Strip any <...> block that contains DSML,
+    # tool_call, or <tool_call> markers.
+    patterns = [
+        r"<[^<>]*DSML[^<>]*>",
+        r"<[^<>]*</tool_call>[^<>]*>",
+        r"<[^<>]*</tool_call>",
+        r"<tool_call>[\s\S]*?</tool_call>",
+    ]
+    cleaned = content
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return (
+            "# theorem auto-converged\n\n"
+            "## note\n"
+            "The model converged without producing a textual blueprint. "
+            "Please re-run with a higher max-iterations budget or a different "
+            "model if a real proof blueprint is required.\n"
+        )
+    return cleaned
+
+
+def _tool_call_parts(tool_call) -> tuple:
+    """Return (call_id, function_name, arguments_json) from a tool call.
+
+    Tool calls may arrive as pydantic objects (non-streaming path) or as
+    plain dicts accumulated by ``_merge_streaming_tool_calls`` during the
+    streaming path. Both shapes are normalized here so the loop body can
+    iterate without caring which path produced them.
+    """
+    if isinstance(tool_call, dict):
+        function = tool_call.get("function") or {}
+        if isinstance(function, dict):
+            name = function.get("name") or ""
+            args_json = function.get("arguments") or "{}"
+        else:
+            name = getattr(function, "name", "") or ""
+            args_json = getattr(function, "arguments", None) or "{}"
+        call_id = tool_call.get("id")
+    else:
+        function = getattr(tool_call, "function", None)
+        if function is None:
+            name = ""
+            args_json = "{}"
+        else:
+            name = getattr(function, "name", "") or ""
+            args_json = getattr(function, "arguments", None) or "{}"
+        call_id = getattr(tool_call, "id", None)
+    return call_id, name, args_json
 
 
 def _write_transcript(log_path: Path, transcript: list[str]) -> None:

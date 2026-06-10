@@ -63,6 +63,9 @@ class WatchState:
     def is_failed(self) -> bool:
         if self.last_event is None:
             return False
+        if self.last_event.get("event_type") == "run_finished":
+            returncode = self.last_event.get("returncode")
+            return isinstance(returncode, int) and returncode != 0
         return self.last_event.get("event_type") in {"run_failed", "verification_failed"}
 
 

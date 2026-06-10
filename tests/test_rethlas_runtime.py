@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from rethlas.agent_loop import _run_litellm_tool_loop
+from rethlas.agent_loop import _run_litellm_tool_loop, run_native_generation
 from rethlas.config import ModelConfig, load_config
 from rethlas.problems import normalize_problem
 from rethlas.references import ReferencePreparation
@@ -17,6 +18,7 @@ from rethlas.runtime import (
     _validate_verification_payload,
     build_request,
 )
+from rethlas.events import iter_events
 from rethlas.subagents import SubAgentRunner, SubAgentTask
 from rethlas.tools import build_generation_tool_registry
 
@@ -134,6 +136,184 @@ def test_native_litellm_tool_loop_uses_shared_completion_kwargs(monkeypatch, tmp
     assert captured["api_key"] == "sk-test"
     assert captured["api_base"] == "https://proxy.example.com/v1"
     assert captured["tools"][0]["function"]["name"] == "memory_init"
+
+
+def test_native_generation_repairs_after_wrong_verdict(monkeypatch, tmp_path):
+    completions: list[str] = []
+    prompts: list[str] = []
+
+    class FakeLiteLLM:
+        @staticmethod
+        def completion(**kwargs):
+            prompts.append(kwargs["messages"][-1]["content"])
+            content = "bad proof" if len(completions) == 0 else "fixed proof with \\(x \\in X\\)"
+            completions.append(content)
+            message = SimpleNamespace(content=content, tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeRegistry:
+        def __init__(self):
+            self.verifications = 0
+            self.memory_records = []
+
+        def call(self, name, arguments):
+            if name in {"memory_init", "memory_append"}:
+                if name == "memory_append":
+                    self.memory_records.append(arguments)
+                return SimpleNamespace(ok=True, result={"ok": True}, error="")
+            if name == "verify_proof_service":
+                self.verifications += 1
+                if self.verifications == 1:
+                    return SimpleNamespace(
+                        ok=True,
+                        result={
+                            "verification_report": {
+                                "summary": "gap",
+                                "critical_errors": [],
+                                "gaps": [{"location": "proof", "issue": "missing step"}],
+                            },
+                            "verdict": "wrong",
+                            "repair_hints": "Fill the missing step.",
+                        },
+                        error="",
+                    )
+                return SimpleNamespace(
+                    ok=True,
+                    result={
+                        "verification_report": {"summary": "ok", "critical_errors": [], "gaps": []},
+                        "verdict": "correct",
+                        "repair_hints": "",
+                    },
+                    error="",
+                )
+            raise AssertionError(f"unexpected tool {name}")
+
+        def schemas(self):
+            return None
+
+    registry = FakeRegistry()
+    monkeypatch.setitem(sys.modules, "litellm", FakeLiteLLM)
+    monkeypatch.setattr("rethlas.agent_loop.build_generation_tool_registry", lambda config: registry)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    config = load_config()
+    base_problem = normalize_problem("example", config.paths.generation_dir)
+    problem = replace(
+        base_problem,
+        log_dir=tmp_path / "logs",
+        log_file=tmp_path / "logs" / "example.md",
+        result_dir=tmp_path / "results",
+        memory_dir=tmp_path / "memory",
+    )
+    request = build_request(
+        config,
+        role="generation",
+        cwd=tmp_path,
+        prompt="hello",
+        log_path=tmp_path / "model.md",
+        model_name="deepseek",
+    )
+    object.__setattr__(request.model, "supports_streaming", False)
+
+    result = run_native_generation(
+        config,
+        problem,
+        ReferencePreparation(reference_dir=problem.reference_dir, exists=False),
+        request,
+        stream=False,
+        max_attempts=2,
+    )
+
+    assert result.returncode == 0
+    assert registry.verifications == 2
+    assert problem.result_dir.joinpath("blueprint_verified.md").read_text(encoding="utf-8") == "fixed proof with \\(x \\in X\\)"
+    assert "Verification report" in prompts[1]
+    assert "strictly as LaTeX math" in prompts[0]
+    assert "strictly as LaTeX math" in prompts[1]
+    event_types = [event["event_type"] for event in iter_events(problem.log_dir)]
+    assert event_types.count("native_attempt_started") == 2
+    assert "native_attempt_failed" in event_types
+
+
+def test_native_generation_exhausts_after_repeated_wrong_verdicts(monkeypatch, tmp_path):
+    class FakeLiteLLM:
+        calls = 0
+
+        @staticmethod
+        def completion(**kwargs):
+            FakeLiteLLM.calls += 1
+            message = SimpleNamespace(content=f"still wrong {FakeLiteLLM.calls}", tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeRegistry:
+        def __init__(self):
+            self.verifications = 0
+
+        def call(self, name, arguments):
+            if name in {"memory_init", "memory_append"}:
+                return SimpleNamespace(ok=True, result={"ok": True}, error="")
+            if name == "verify_proof_service":
+                self.verifications += 1
+                return SimpleNamespace(
+                    ok=True,
+                    result={
+                        "verification_report": {
+                            "summary": "wrong",
+                            "critical_errors": [{"location": "proof", "issue": "false claim"}],
+                            "gaps": [],
+                        },
+                        "verdict": "wrong",
+                        "repair_hints": "Remove the false claim.",
+                    },
+                    error="",
+                )
+            raise AssertionError(f"unexpected tool {name}")
+
+        def schemas(self):
+            return None
+
+    registry = FakeRegistry()
+    monkeypatch.setitem(sys.modules, "litellm", FakeLiteLLM)
+    monkeypatch.setattr("rethlas.agent_loop.build_generation_tool_registry", lambda config: registry)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    config = load_config()
+    base_problem = normalize_problem("example", config.paths.generation_dir)
+    problem = replace(
+        base_problem,
+        log_dir=tmp_path / "logs",
+        log_file=tmp_path / "logs" / "example.md",
+        result_dir=tmp_path / "results",
+        memory_dir=tmp_path / "memory",
+    )
+    request = build_request(
+        config,
+        role="generation",
+        cwd=tmp_path,
+        prompt="hello",
+        log_path=tmp_path / "model.md",
+        model_name="deepseek",
+    )
+    object.__setattr__(request.model, "supports_streaming", False)
+
+    result = run_native_generation(
+        config,
+        problem,
+        ReferencePreparation(reference_dir=problem.reference_dir, exists=False),
+        request,
+        stream=False,
+        max_attempts=2,
+    )
+
+    assert result.returncode == 1
+    assert registry.verifications == 2
+    assert problem.result_dir.joinpath("blueprint.md").exists()
+    assert not problem.result_dir.joinpath("blueprint_verified.md").exists()
+    event_types = [event["event_type"] for event in iter_events(problem.log_dir)]
+    assert "native_generation_exhausted" in event_types
+    assert event_types[-1] == "run_failed"
 
 
 def test_verification_json_validation():

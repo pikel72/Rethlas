@@ -30,6 +30,7 @@ def run_native_generation(
     *,
     stream: bool = True,
     resume: bool = False,
+    max_attempts: int = 4,
 ) -> NativeGenerationResult:
     registry = build_generation_tool_registry(config)
     append_event(
@@ -105,59 +106,168 @@ def run_native_generation(
             message=f"native generation does not support provider kind {request.provider.kind}",
         )
 
-    try:
-        draft = _run_litellm_tool_loop(
-            config, problem, refs, request, registry,
-            stream=stream, resume=resume,
-        )
-    except Exception as exc:
-        append_event(
-            problem.log_dir,
-            "run_failed",
-            {"returncode": 1, "error": str(exc)},
-        )
-        return NativeGenerationResult(
-            returncode=1,
-            draft_path=draft_path,
-            verified_path=verified_path,
-            message=f"native generation model call failed: {exc}",
-        )
-
     if verified_path.exists():
         verified_path.unlink()
-    draft_path.write_text(draft, encoding="utf-8")
-    verification = registry.call(
-        "verify_proof_service",
-        {"statement": problem.problem_file.read_text(encoding="utf-8"), "proof": draft},
-    )
-    if verification.ok:
-        report = verification.result
-        verdict = report.get("verdict") if isinstance(report, dict) else None
-        append_event(problem.log_dir, "verification_finished", {"verdict": verdict})
+
+    previous_draft: Optional[str] = None
+    previous_verification: Optional[dict] = None
+    statement = problem.problem_file.read_text(encoding="utf-8")
+    attempts = max(1, max_attempts)
+
+    for attempt in range(1, attempts + 1):
+        phase = "repair" if previous_verification is not None else "draft"
+        append_event(
+            problem.log_dir,
+            "native_attempt_started",
+            {"attempt": attempt, "max_attempts": attempts, "phase": phase},
+        )
+        try:
+            draft = _run_litellm_tool_loop(
+                config,
+                problem,
+                refs,
+                request,
+                registry,
+                stream=stream,
+                resume=resume,
+                attempt=attempt,
+                previous_draft=previous_draft,
+                previous_verification=previous_verification,
+            )
+        except Exception as exc:
+            append_event(
+                problem.log_dir,
+                "run_failed",
+                {"returncode": 1, "attempt": attempt, "error": str(exc)},
+            )
+            return NativeGenerationResult(
+                returncode=1,
+                draft_path=draft_path,
+                verified_path=verified_path,
+                message=f"native generation model call failed: {exc}",
+            )
+
+        previous_draft = draft
+        draft_path.write_text(draft, encoding="utf-8")
+        append_event(
+            problem.log_dir,
+            "candidate_written",
+            {"attempt": attempt, "draft_path": str(draft_path), "chars": len(draft)},
+        )
+        registry.call(
+            "memory_append",
+            {
+                "problem_id": problem.problem_id,
+                "channel": "events",
+                "record": {
+                    "event_type": "candidate_written",
+                    "attempt": attempt,
+                    "draft_path": str(draft_path),
+                    "chars": len(draft),
+                },
+            },
+        )
+
+        append_event(problem.log_dir, "verification_started", {"attempt": attempt})
+        verification = registry.call(
+            "verify_proof_service",
+            {"statement": statement, "proof": draft},
+        )
+        if not verification.ok:
+            append_event(
+                problem.log_dir,
+                "verification_failed",
+                {"attempt": attempt, "error": verification.error},
+            )
+            append_event(
+                problem.log_dir,
+                "run_failed",
+                {"returncode": 1, "attempt": attempt, "error": verification.error},
+            )
+            return NativeGenerationResult(
+                returncode=1,
+                draft_path=draft_path,
+                verified_path=verified_path,
+                message=f"native generation wrote blueprint.md; verification was unavailable: {verification.error}",
+            )
+
+        report = verification.result if isinstance(verification.result, dict) else {}
+        verdict = report.get("verdict")
+        previous_verification = report
+        append_event(
+            problem.log_dir,
+            "verification_finished",
+            {"attempt": attempt, "verdict": verdict},
+        )
+        registry.call(
+            "memory_append",
+            {
+                "problem_id": problem.problem_id,
+                "channel": "verification_reports",
+                "record": {
+                    "attempt": attempt,
+                    "verdict": verdict,
+                    "verification_report": report.get("verification_report", {}),
+                    "repair_hints": report.get("repair_hints", ""),
+                },
+            },
+        )
+
         if verdict == "correct":
             verified_path.write_text(draft, encoding="utf-8")
-    else:
-        append_event(problem.log_dir, "verification_failed", {"error": verification.error})
-    registry.call(
-        "memory_append",
+            registry.call(
+                "memory_append",
+                {
+                    "problem_id": problem.problem_id,
+                    "channel": "events",
+                    "record": {
+                        "event_type": "artifact_written",
+                        "attempt": attempt,
+                        "draft_path": str(draft_path),
+                        "verified_path": str(verified_path),
+                    },
+                },
+            )
+            append_event(
+                problem.log_dir,
+                "artifact_written",
+                {
+                    "attempt": attempt,
+                    "draft_path": str(draft_path),
+                    "verified_path": str(verified_path),
+                },
+            )
+            return NativeGenerationResult(
+                returncode=0,
+                draft_path=draft_path,
+                verified_path=verified_path,
+                message="native generation wrote blueprint.md and verifier accepted blueprint_verified.md",
+            )
+
+        append_event(
+            problem.log_dir,
+            "native_attempt_failed",
+            {"attempt": attempt, "verdict": verdict, "remaining_attempts": attempts - attempt},
+        )
+
+    append_event(
+        problem.log_dir,
+        "native_generation_exhausted",
+        {"attempts": attempts, "last_verdict": (previous_verification or {}).get("verdict")},
+    )
+    append_event(
+        problem.log_dir,
+        "run_failed",
         {
-            "problem_id": problem.problem_id,
-            "channel": "events",
-            "record": {"event_type": "artifact_written", "draft_path": str(draft_path)},
+            "returncode": 1,
+            "error": f"native generation exhausted {attempts} verification attempt(s) without acceptance",
         },
     )
-    if verified_path.exists():
-        message = "native generation wrote blueprint.md and verifier accepted blueprint_verified.md"
-    elif verification.ok:
-        message = "native generation wrote blueprint.md; verifier did not accept it yet"
-    else:
-        message = f"native generation wrote blueprint.md; verification was unavailable: {verification.error}"
-    append_event(problem.log_dir, "artifact_written", {"draft_path": str(draft_path)})
     return NativeGenerationResult(
-        returncode=0,
+        returncode=1,
         draft_path=draft_path,
         verified_path=verified_path,
-        message=message,
+        message=f"native generation exhausted {attempts} verification attempt(s) without acceptance",
     )
 
 
@@ -172,15 +282,30 @@ def _run_litellm_tool_loop(
     max_iterations: int = 16,
     use_provider_streaming: bool = True,
     resume: bool = False,
+    attempt: int = 1,
+    previous_draft: Optional[str] = None,
+    previous_verification: Optional[dict] = None,
 ) -> str:
     try:
         import litellm
     except ImportError as exc:
         raise RuntimeError("LiteLLM backend selected, but the 'litellm' package is not installed.") from exc
 
+    user_prompt = (
+        _native_generation_repair_prompt(
+            config,
+            problem,
+            refs,
+            previous_draft=previous_draft or "",
+            previous_verification=previous_verification or {},
+            attempt=attempt,
+        )
+        if previous_verification is not None
+        else _native_generation_user_prompt(config, problem, refs, resume=resume)
+    )
     messages: list[dict] = [
         {"role": "system", "content": _native_generation_system_prompt(config)},
-        {"role": "user", "content": _native_generation_user_prompt(config, problem, refs, resume=resume)},
+        {"role": "user", "content": user_prompt},
     ]
     transcript: list[str] = []
     tools = registry.schemas() if request.model.supports_tools else None
@@ -389,7 +514,7 @@ def _message_to_dict_assistant(content: str, tool_calls: list) -> dict:
     if tool_calls:
         serialized = []
         for entry in tool_calls:
-            if entry.get("_index") is not None:
+            if isinstance(entry, dict) and entry.get("_index") is not None:
                 serialized.append(
                     {
                         "id": entry.get("id"),
@@ -404,6 +529,18 @@ def _message_to_dict_assistant(content: str, tool_calls: list) -> dict:
                 serialized.append(entry.model_dump(exclude_none=True))
             elif isinstance(entry, dict):
                 serialized.append(entry)
+            else:
+                function = getattr(entry, "function", None)
+                serialized.append(
+                    {
+                        "id": getattr(entry, "id", None),
+                        "type": getattr(entry, "type", "function"),
+                        "function": {
+                            "name": getattr(function, "name", "") if function is not None else "",
+                            "arguments": getattr(function, "arguments", "{}") if function is not None else "{}",
+                        },
+                    }
+                )
         payload["tool_calls"] = serialized
     return payload
 
@@ -473,6 +610,8 @@ def _tool_call_parts(tool_call) -> tuple:
             name = getattr(function, "name", "") or ""
             args_json = getattr(function, "arguments", None) or "{}"
         call_id = getattr(tool_call, "id", None)
+    if not call_id:
+        call_id = f"call_{abs(hash((name, args_json))) % 10_000_000}"
     return call_id, name, args_json
 
 
@@ -539,12 +678,57 @@ def _native_generation_user_prompt(
         f"Problem file: {problem.problem_path}\n"
         f"Reference policy: {refs.prompt_suffix}\n\n"
         "Use the available tools for memory and verification. "
-        "When you have a candidate proof blueprint, return only markdown for blueprint.md.\n\n"
+        "When you have a candidate proof blueprint, return only markdown for blueprint.md.\n"
+        f"{_latex_output_policy()}\n\n"
         "Problem statement:\n"
         f"{problem_text}\n\n"
         "Reference excerpts:\n"
         f"{reference_text}\n"
         f"{resume_note}"
+    )
+
+
+def _native_generation_repair_prompt(
+    config: RethlasConfig,
+    problem: ProblemPaths,
+    refs: ReferencePreparation,
+    *,
+    previous_draft: str,
+    previous_verification: dict,
+    attempt: int,
+) -> str:
+    problem_text = problem.problem_file.read_text(encoding="utf-8")
+    reference_text = _read_reference_text(problem.reference_dir)
+    verification_text = json.dumps(previous_verification, ensure_ascii=False, indent=2)
+    return (
+        f"Problem id: {problem.problem_id}\n"
+        f"Problem file: {problem.problem_path}\n"
+        f"Repair attempt: {attempt}\n"
+        f"Reference policy: {refs.prompt_suffix}\n\n"
+        "The previous candidate proof did not pass verification. Use the "
+        "verification report as the control signal: fix critical_errors first, "
+        "then gaps, then address repair_hints. If the report requires a "
+        "strategy change, revise the proof globally rather than making a local "
+        "patch. Return a complete replacement markdown proof for blueprint.md, "
+        "not a diff and not commentary about the changes.\n"
+        f"{_latex_output_policy()}\n\n"
+        "Problem statement:\n"
+        f"{problem_text}\n\n"
+        "Previous candidate proof:\n"
+        f"{previous_draft}\n\n"
+        "Verification report:\n"
+        f"{verification_text}\n\n"
+        "Reference excerpts:\n"
+        f"{reference_text}\n"
+    )
+
+
+def _latex_output_policy() -> str:
+    return (
+        "Output formatting policy: write mathematical symbols and expressions "
+        "strictly as LaTeX math. Use inline math like \\(x \\in A\\) and display "
+        "math like \\[ ... \\]. Do not use raw Unicode math symbols such as ∀, "
+        "∃, ∈, ≤, ≥, →, or Greek letters outside LaTeX math delimiters."
     )
 
 

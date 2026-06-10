@@ -69,6 +69,18 @@ def test_message_to_dict_assistant_serializes_streamed_tool_calls():
     assert payload["tool_calls"][0]["function"]["name"] == "x"
 
 
+def test_message_to_dict_assistant_serializes_object_tool_calls():
+    tool_call = SimpleNamespace(
+        id="abc",
+        type="function",
+        function=SimpleNamespace(name="memory_search", arguments='{"query":"x"}'),
+    )
+    payload = _message_to_dict_assistant("", [tool_call])
+    assert payload["tool_calls"][0]["id"] == "abc"
+    assert payload["tool_calls"][0]["function"]["name"] == "memory_search"
+    assert payload["tool_calls"][0]["function"]["arguments"] == '{"query":"x"}'
+
+
 def test_litellm_tool_loop_uses_streaming_and_emits_model_delta(monkeypatch, tmp_path):
     """When streaming is requested, the tool loop should consume a streamed
     response, emit one ``model_delta`` event per text chunk, and write

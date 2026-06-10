@@ -245,6 +245,14 @@ def test_summarize_watch_state_failed_when_run_failed(tmp_path):
     assert state.last_error == "boom"
 
 
+def test_summarize_watch_state_failed_when_run_finished_nonzero(tmp_path):
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    append_event(tmp_path, "run_finished", {"returncode": 1})
+    state = summarize_watch_state(tmp_path, result_dir)
+    assert state.is_failed
+
+
 def test_summarize_watch_state_pending_when_no_terminal_event(tmp_path):
     result_dir = tmp_path / "results"
     result_dir.mkdir()

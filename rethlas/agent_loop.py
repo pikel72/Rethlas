@@ -459,14 +459,25 @@ def _run_litellm_tool_loop(
             content = ""
             tool_calls: list = []
             finish_reason = None
+            reasoning_chars = 0
             should_stream = use_provider_streaming and request.model.supports_streaming
             if should_stream:
                 try:
                     completion_kwargs["stream"] = True
                     chunks = litellm.completion(**completion_kwargs)
+                    reasoning_active = False
                     for chunk in chunks:
+                        reasoning_delta = _extract_stream_reasoning(chunk)
+                        if reasoning_delta:
+                            reasoning_chars += len(reasoning_delta)
+                            if stream and reasoning_chars % 200 == 0:
+                                _stream_text(".", end="")
+                                reasoning_active = True
                         delta = _extract_stream_delta(chunk)
                         if delta:
+                            if stream and reasoning_active:
+                                _stream_text("\n", end="")
+                                reasoning_active = False
                             content += delta
                             append_event(
                                 problem.log_dir,
@@ -492,26 +503,43 @@ def _run_litellm_tool_loop(
                     )
                     completion_kwargs.pop("stream", None)
                     response = litellm.completion(**completion_kwargs)
-                    message = response.choices[0].message
+                    choice = response.choices[0]
+                    finish_reason = getattr(choice, "finish_reason", None)
+                    message = choice.message
                     content = getattr(message, "content", None) or ""
                     tool_calls = getattr(message, "tool_calls", None) or []
+                    reasoning_msg = getattr(message, "reasoning_content", None) or ""
+                    reasoning_chars = len(reasoning_msg) if reasoning_msg else 0
             else:
                 response = litellm.completion(**completion_kwargs)
-                message = response.choices[0].message
+                choice = response.choices[0]
+                finish_reason = getattr(choice, "finish_reason", None)
+                message = choice.message
                 content = getattr(message, "content", None) or ""
                 tool_calls = getattr(message, "tool_calls", None) or []
+                reasoning_msg = getattr(message, "reasoning_content", None) or ""
+                reasoning_chars = len(reasoning_msg) if reasoning_msg else 0
 
             if stream and content and should_stream:
                 # Close the streamed line so the next tool/iteration starts cleanly.
                 _stream_text("\n", end="")
             elif content and stream:
                 _stream_text(content)
+            elif stream and reasoning_chars > 0:
+                # Reasoning heartbeat was shown; close the line even though
+                # this iteration produced no text content.
+                _stream_text("\n", end="")
 
             transcript.append(f"\n\n## iteration {iteration}\n{content}")
             append_event(
                 problem.log_dir,
                 "model_finished",
-                {"iteration": iteration, "finish_reason": finish_reason, "chars": len(content)},
+                {
+                    "iteration": iteration,
+                    "finish_reason": finish_reason,
+                    "chars": len(content),
+                    "reasoning_chars": reasoning_chars,
+                },
             )
 
             if not tool_calls:
@@ -573,6 +601,29 @@ def _extract_stream_delta(chunk) -> str:
                 part.get("text", "") for part in content
                 if isinstance(part, dict)
             )
+    except (AttributeError, IndexError):
+        return ""
+    return ""
+
+
+def _extract_stream_reasoning(chunk) -> str:
+    """Extract reasoning_content from a streamed chunk delta.
+
+    DeepSeek reasoner models emit ``reasoning_content`` in the delta alongside
+    (or instead of) ``content`` during long internal reasoning phases.  The
+    streaming loop uses this to show a liveness heartbeat so the user knows the
+    model has not hung.
+    """
+    try:
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            return ""
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return ""
+        reasoning = getattr(delta, "reasoning_content", None)
+        if isinstance(reasoning, str):
+            return reasoning
     except (AttributeError, IndexError):
         return ""
     return ""

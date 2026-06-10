@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import sys
+import time
 from typing import Optional
 
 from .config import RethlasConfig
@@ -30,7 +31,7 @@ def run_native_generation(
     *,
     stream: bool = True,
     resume: bool = False,
-    max_attempts: int = 4,
+    max_attempts: int = 8,
 ) -> NativeGenerationResult:
     registry = build_generation_tool_registry(config)
     append_event(
@@ -113,20 +114,38 @@ def run_native_generation(
     previous_verification: Optional[dict] = None
     statement = problem.problem_file.read_text(encoding="utf-8")
     attempts = max(1, max_attempts)
+    deadline = (
+        time.monotonic() + request.timeout_seconds
+        if request.timeout_seconds is not None and request.timeout_seconds > 0
+        else None
+    )
 
     for attempt in range(1, attempts + 1):
+        remaining_timeout = _remaining_timeout_seconds(deadline)
+        if remaining_timeout == 0:
+            return _native_timeout_result(problem.log_dir, draft_path, verified_path, attempt)
         phase = "repair" if previous_verification is not None else "draft"
         append_event(
             problem.log_dir,
             "native_attempt_started",
-            {"attempt": attempt, "max_attempts": attempts, "phase": phase},
+            {
+                "attempt": attempt,
+                "max_attempts": attempts,
+                "phase": phase,
+                "remaining_timeout_seconds": remaining_timeout,
+            },
+        )
+        attempt_request = (
+            replace(request, timeout_seconds=remaining_timeout)
+            if remaining_timeout is not None
+            else request
         )
         try:
             draft = _run_litellm_tool_loop(
                 config,
                 problem,
                 refs,
-                request,
+                attempt_request,
                 registry,
                 stream=stream,
                 resume=resume,
@@ -169,9 +188,16 @@ def run_native_generation(
         )
 
         append_event(problem.log_dir, "verification_started", {"attempt": attempt})
+        remaining_timeout = _remaining_timeout_seconds(deadline)
+        if remaining_timeout == 0:
+            return _native_timeout_result(problem.log_dir, draft_path, verified_path, attempt)
         verification = registry.call(
             "verify_proof_service",
-            {"statement": statement, "proof": draft},
+            {
+                "statement": statement,
+                "proof": draft,
+                "timeout_seconds": remaining_timeout or 3600,
+            },
         )
         if not verification.ok:
             append_event(
@@ -268,6 +294,40 @@ def run_native_generation(
         draft_path=draft_path,
         verified_path=verified_path,
         message=f"native generation exhausted {attempts} verification attempt(s) without acceptance",
+    )
+
+
+def _remaining_timeout_seconds(deadline: Optional[float]) -> Optional[int]:
+    if deadline is None:
+        return None
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        return 0
+    return max(1, remaining)
+
+
+def _native_timeout_result(
+    log_dir: Path,
+    draft_path: Path,
+    verified_path: Path,
+    attempt: int,
+) -> NativeGenerationResult:
+    message = "native generation exhausted runtime timeout before verification acceptance"
+    append_event(
+        log_dir,
+        "native_generation_exhausted",
+        {"attempt": attempt, "reason": "timeout"},
+    )
+    append_event(
+        log_dir,
+        "run_failed",
+        {"returncode": 1, "attempt": attempt, "error": message},
+    )
+    return NativeGenerationResult(
+        returncode=1,
+        draft_path=draft_path,
+        verified_path=verified_path,
+        message=message,
     )
 
 
@@ -648,6 +708,7 @@ def _native_generation_prompt(
         f"{problem_text}\n\n"
         "Reference excerpts:\n"
         f"{reference_text}\n\n"
+        f"{_latex_output_policy()}\n\n"
         "Write a markdown proof blueprint. Return only the markdown content for blueprint.md."
     )
 
@@ -726,9 +787,11 @@ def _native_generation_repair_prompt(
 def _latex_output_policy() -> str:
     return (
         "Output formatting policy: write mathematical symbols and expressions "
-        "strictly as LaTeX math. Use inline math like \\(x \\in A\\) and display "
-        "math like \\[ ... \\]. Do not use raw Unicode math symbols such as ∀, "
-        "∃, ∈, ≤, ≥, →, or Greek letters outside LaTeX math delimiters."
+        "strictly as LaTeX math wrapped in dollar delimiters. Use inline math "
+        "like `$x \\in A$` and display math like `$$ ... $$`. Do not use "
+        "raw Unicode math symbols such as ∀, ∃, ∈, ≤, ≥, →, or Greek letters "
+        "outside LaTeX math delimiters. Do not use `\\(...\\)` or `\\[...\\]` "
+        "because some markdown compilers used by this project do not recognize them."
     )
 
 

@@ -99,6 +99,11 @@ For native generation with `--model deepseek`:
 9. If the loop exhausts configured attempt/model/tool budgets, emit
    `run_failed` with the last verifier report and exit nonzero.
 
+All generated markdown must use dollar-delimited LaTeX for mathematical
+notation: inline math as `$...$` and display math as `$$...$$`. Do not use
+`\(...\)` or `\[...\]`, because some markdown compilers in the target workflow
+do not recognize those delimiters.
+
 This gives the native path the same important success contract as the Codex
 path: success means a verified artifact, not just a generated draft.
 
@@ -189,13 +194,16 @@ return nonzero
 
 Default budgets:
 
-- `max_attempts = 4`
+- `max_attempts = 8`
 - `max_model_iterations_per_attempt = 16`
 - `max_tool_iterations_per_attempt = 8`
 - `max_search_iterations_per_attempt = 4`
+- `runtime.timeout_seconds = 3600` as a whole native-run budget, not a
+  per-attempt budget.
 
-For simple problems, this stays cheap. For harder problems, the system gets
-several genuine repair opportunities without becoming an unbounded daemon.
+For simple problems, this stays cheap because the run stops as soon as the
+verifier accepts. For harder problems, the system gets several genuine repair
+opportunities without becoming an unbounded daemon.
 
 ### 4. Enforce Tool Policy In Code
 
@@ -245,7 +253,7 @@ Add optional TOML native-loop profiles, for example:
 
 ```toml
 [native_profiles.deepseek-balanced]
-max_attempts = 4
+max_attempts = 8
 max_model_iterations_per_attempt = 16
 max_search_iterations_per_attempt = 4
 temperature = 0.2

@@ -146,7 +146,7 @@ def test_native_generation_repairs_after_wrong_verdict(monkeypatch, tmp_path):
         @staticmethod
         def completion(**kwargs):
             prompts.append(kwargs["messages"][-1]["content"])
-            content = "bad proof" if len(completions) == 0 else "fixed proof with \\(x \\in X\\)"
+            content = "bad proof" if len(completions) == 0 else "fixed proof with $x \\in X$"
             completions.append(content)
             message = SimpleNamespace(content=content, tool_calls=[])
             return SimpleNamespace(choices=[SimpleNamespace(message=message)])
@@ -227,10 +227,13 @@ def test_native_generation_repairs_after_wrong_verdict(monkeypatch, tmp_path):
 
     assert result.returncode == 0
     assert registry.verifications == 2
-    assert problem.result_dir.joinpath("blueprint_verified.md").read_text(encoding="utf-8") == "fixed proof with \\(x \\in X\\)"
+    assert problem.result_dir.joinpath("blueprint_verified.md").read_text(encoding="utf-8") == "fixed proof with $x \\in X$"
     assert "Verification report" in prompts[1]
     assert "strictly as LaTeX math" in prompts[0]
     assert "strictly as LaTeX math" in prompts[1]
+    assert "$x \\in A$" in prompts[0]
+    assert "$$ ... $$" in prompts[0]
+    assert "\\(x \\in A\\)" not in prompts[0]
     event_types = [event["event_type"] for event in iter_events(problem.log_dir)]
     assert event_types.count("native_attempt_started") == 2
     assert "native_attempt_failed" in event_types
@@ -314,6 +317,79 @@ def test_native_generation_exhausts_after_repeated_wrong_verdicts(monkeypatch, t
     event_types = [event["event_type"] for event in iter_events(problem.log_dir)]
     assert "native_generation_exhausted" in event_types
     assert event_types[-1] == "run_failed"
+
+
+def test_native_generation_defaults_to_eight_attempts_and_passes_timeout(monkeypatch, tmp_path):
+    class FakeLiteLLM:
+        @staticmethod
+        def completion(**kwargs):
+            message = SimpleNamespace(content="wrong proof", tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeRegistry:
+        def __init__(self):
+            self.verification_timeouts = []
+
+        def call(self, name, arguments):
+            if name in {"memory_init", "memory_append"}:
+                return SimpleNamespace(ok=True, result={"ok": True}, error="")
+            if name == "verify_proof_service":
+                self.verification_timeouts.append(arguments.get("timeout_seconds"))
+                return SimpleNamespace(
+                    ok=True,
+                    result={
+                        "verification_report": {
+                            "summary": "wrong",
+                            "critical_errors": [],
+                            "gaps": [{"location": "proof", "issue": "gap"}],
+                        },
+                        "verdict": "wrong",
+                        "repair_hints": "Repair the gap.",
+                    },
+                    error="",
+                )
+            raise AssertionError(f"unexpected tool {name}")
+
+        def schemas(self):
+            return None
+
+    registry = FakeRegistry()
+    monkeypatch.setitem(sys.modules, "litellm", FakeLiteLLM)
+    monkeypatch.setattr("rethlas.agent_loop.build_generation_tool_registry", lambda config: registry)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    config = load_config()
+    base_problem = normalize_problem("example", config.paths.generation_dir)
+    problem = replace(
+        base_problem,
+        log_dir=tmp_path / "logs",
+        log_file=tmp_path / "logs" / "example.md",
+        result_dir=tmp_path / "results",
+        memory_dir=tmp_path / "memory",
+    )
+    request = build_request(
+        config,
+        role="generation",
+        cwd=tmp_path,
+        prompt="hello",
+        log_path=tmp_path / "model.md",
+        model_name="deepseek",
+    )
+    object.__setattr__(request.model, "supports_streaming", False)
+    object.__setattr__(request, "timeout_seconds", 60)
+
+    result = run_native_generation(
+        config,
+        problem,
+        ReferencePreparation(reference_dir=problem.reference_dir, exists=False),
+        request,
+        stream=False,
+    )
+
+    assert result.returncode == 1
+    assert len(registry.verification_timeouts) == 8
+    assert all(isinstance(value, int) and 1 <= value <= 60 for value in registry.verification_timeouts)
 
 
 def test_verification_json_validation():

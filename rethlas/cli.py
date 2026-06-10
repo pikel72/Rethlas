@@ -385,12 +385,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     if plan.provider_kind != "codex-cli" and args.role == "generation":
         if getattr(args, "json_events", False):
             _enable_json_events_stdout(problem.log_dir)
+        # Transparent resume: when prior memory, logs, or a draft
+        # blueprint exist, the next ``run`` automatically continues
+        # from where the previous run left off.
+        prior_blueprint = problem.result_dir / "blueprint.md"
+        _resume = (
+            problem.memory_dir.is_dir()
+            or any(problem.log_dir.glob("*.jsonl"))
+            or (prior_blueprint.is_file() and prior_blueprint.stat().st_size > 0)
+        )
+        if _resume:
+            print("note: prior state found — continuing previous work")
         result = run_native_generation(
             config,
             problem,
             refs,
             request,
             stream=not args.no_live_log,
+            resume=_resume,
         )
         print(result.message)
         print(f"draft: {result.draft_path}")

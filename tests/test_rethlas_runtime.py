@@ -17,6 +17,8 @@ from rethlas.runtime import (
     _normalize_verification_payload,
     _validate_verification_payload,
     build_request,
+    missing_runtime_dependencies,
+    RuntimePlan,
 )
 from rethlas.events import iter_events
 from rethlas.subagents import SubAgentRunner, SubAgentTask
@@ -86,6 +88,32 @@ def test_litellm_model_id_passthrough_without_compat():
     from rethlas.runtime import litellm_model_id
     model = ModelConfig(name="x", provider="litellm", model="gpt-5.5", compat=None)
     assert litellm_model_id(model) == "gpt-5.5"
+
+
+def test_missing_runtime_dependencies_imports_litellm(monkeypatch, tmp_path):
+    def fake_import_module(name: str):
+        if name == "litellm":
+            raise ImportError("No module named 'openai'")
+        raise AssertionError(name)
+
+    monkeypatch.setattr("rethlas.runtime.import_module", fake_import_module)
+    plan = RuntimePlan(
+        role="generation",
+        provider_name="litellm",
+        provider_kind="litellm",
+        model_profile="deepseek",
+        model="deepseek-v4-pro",
+        cwd=tmp_path,
+        log_path=tmp_path / "log.md",
+        command=None,
+        api_base_url="https://api.deepseek.com/v1",
+        api_key_env=None,
+        implemented=True,
+    )
+
+    assert missing_runtime_dependencies(plan) == [
+        "python package: litellm (No module named 'openai')"
+    ]
 
 
 def test_native_litellm_tool_loop_uses_shared_completion_kwargs(monkeypatch, tmp_path):
@@ -319,6 +347,99 @@ def test_native_generation_exhausts_after_repeated_wrong_verdicts(monkeypatch, t
     assert event_types[-1] == "run_failed"
 
 
+def test_native_generation_empty_draft_keeps_previous_candidate(monkeypatch, tmp_path):
+    completions = ["bad proof with a gap", "", "fixed proof"]
+    prompts: list[str] = []
+
+    class FakeLiteLLM:
+        @staticmethod
+        def completion(**kwargs):
+            prompts.append(kwargs["messages"][-1]["content"])
+            message = SimpleNamespace(content=completions.pop(0), tool_calls=[])
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    class FakeRegistry:
+        def __init__(self):
+            self.verifications = 0
+
+        def call(self, name, arguments):
+            if name in {"memory_init", "memory_append"}:
+                return SimpleNamespace(ok=True, result={"ok": True}, error="")
+            if name == "verify_proof_service":
+                self.verifications += 1
+                if self.verifications == 1:
+                    return SimpleNamespace(
+                        ok=True,
+                        result={
+                            "verification_report": {
+                                "summary": "gap",
+                                "critical_errors": [],
+                                "gaps": [{"location": "proof", "issue": "missing step"}],
+                            },
+                            "verdict": "wrong",
+                            "repair_hints": "Fill the missing step.",
+                        },
+                        error="",
+                    )
+                return SimpleNamespace(
+                    ok=True,
+                    result={
+                        "verification_report": {"summary": "ok", "critical_errors": [], "gaps": []},
+                        "verdict": "correct",
+                        "repair_hints": "",
+                    },
+                    error="",
+                )
+            raise AssertionError(f"unexpected tool {name}")
+
+        def schemas(self):
+            return None
+
+    registry = FakeRegistry()
+    monkeypatch.setitem(sys.modules, "litellm", FakeLiteLLM)
+    monkeypatch.setattr("rethlas.agent_loop.build_generation_tool_registry", lambda config: registry)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    config = load_config()
+    base_problem = normalize_problem("example", config.paths.generation_dir)
+    problem = replace(
+        base_problem,
+        log_dir=tmp_path / "logs",
+        log_file=tmp_path / "logs" / "example.md",
+        result_dir=tmp_path / "results",
+        memory_dir=tmp_path / "memory",
+    )
+    request = build_request(
+        config,
+        role="generation",
+        cwd=tmp_path,
+        prompt="hello",
+        log_path=tmp_path / "model.md",
+        model_name="deepseek",
+    )
+    object.__setattr__(request.model, "supports_streaming", False)
+
+    result = run_native_generation(
+        config,
+        problem,
+        ReferencePreparation(reference_dir=problem.reference_dir, exists=False),
+        request,
+        stream=False,
+        max_attempts=3,
+    )
+
+    assert result.returncode == 0
+    assert registry.verifications == 2
+    assert problem.result_dir.joinpath("blueprint.md").read_text(encoding="utf-8") == "fixed proof"
+    assert problem.result_dir.joinpath("blueprint_verified.md").read_text(encoding="utf-8") == "fixed proof"
+    assert "Previous candidate proof:\nbad proof with a gap" in prompts[2]
+    events = list(iter_events(problem.log_dir))
+    skipped = [event for event in events if event["event_type"] == "empty_draft_skipped"]
+    assert skipped
+    assert skipped[0]["kept_previous_draft"] is True
+
+
 def test_native_generation_defaults_to_eight_attempts_and_passes_timeout(monkeypatch, tmp_path):
     class FakeLiteLLM:
         @staticmethod
@@ -448,3 +569,67 @@ def test_mock_verification_malformed_rejected(monkeypatch):
 
     with pytest.raises(HTTPException):
         run_runtime_verification("pytest_mock_malformed", "S", "P")
+
+
+def test_rethlas_verification_model_overrides_rethlas_model(monkeypatch):
+    """RETHLAS_VERIFICATION_MODEL must take precedence over RETHLAS_MODEL for
+    the verifier role. This is the env-var users were promised in .env.example
+    and README.md but that previously had no effect because nothing read it."""
+    monkeypatch.setenv("RETHLAS_MODEL", "mock-verification-correct")
+    monkeypatch.setenv("RETHLAS_VERIFICATION_MODEL", "mock-verification-wrong")
+    from agents.verification.api.server import run_runtime_verification
+
+    payload = run_runtime_verification("pytest_ver_model_wins", "S", "P")
+    assert payload["verdict"] == "wrong"
+
+
+def test_verification_falls_back_to_rethlas_model_when_verification_model_unset(monkeypatch):
+    """When RETHLAS_VERIFICATION_MODEL is unset, the verifier should fall back
+    to RETHLAS_MODEL (preserving the prior behavior for users who don't set the
+    new env)."""
+    monkeypatch.delenv("RETHLAS_VERIFICATION_MODEL", raising=False)
+    monkeypatch.setenv("RETHLAS_MODEL", "mock-verification-correct")
+    from agents.verification.api.server import run_runtime_verification
+
+    payload = run_runtime_verification("pytest_ver_model_fallback", "S", "P")
+    assert payload["verdict"] == "correct"
+
+
+def test_health_endpoint_reports_active_model(monkeypatch):
+    """``/health`` must report which model the verifier will actually use, so
+    ``cmd_run`` (and humans) can detect a stale verifier process that was
+    started with a different ``RETHLAS_MODEL`` than the current env."""
+    monkeypatch.delenv("RETHLAS_VERIFICATION_MODEL", raising=False)
+    monkeypatch.setenv("RETHLAS_MODEL", "mock-verification-correct")
+    from agents.verification.api.server import health
+
+    payload = health()
+    assert payload["status"] == "ok"
+    assert payload["model_profile"] == "mock-verification-correct"
+    assert payload["provider"] == "mock"
+    assert payload["provider_kind"] == "mock"
+
+
+def test_health_endpoint_prefers_verification_model_env(monkeypatch):
+    """When ``RETHLAS_VERIFICATION_MODEL`` is set, ``/health`` must reflect it
+    (so we don't print a stale generation model in the run banner)."""
+    monkeypatch.setenv("RETHLAS_MODEL", "mock-verification-correct")
+    monkeypatch.setenv("RETHLAS_VERIFICATION_MODEL", "mock-verification-wrong")
+    from agents.verification.api.server import health
+
+    payload = health()
+    assert payload["model_profile"] == "mock-verification-wrong"
+
+
+def test_health_endpoint_stays_ok_when_model_unresolvable(monkeypatch):
+    """If the verifier was started with a misconfigured model (e.g. a preset
+    whose API key is missing), ``/health`` must still return 200 with
+    ``status=ok`` so the liveness probe works — but flag the resolution
+    failure in ``model_error`` so cmd_run can warn instead of pretending."""
+    monkeypatch.setenv("RETHLAS_VERIFICATION_MODEL", "does-not-exist")
+    from agents.verification.api.server import health
+
+    payload = health()
+    assert payload["status"] == "ok"
+    assert payload["model_profile"] is None
+    assert "does-not-exist" in (payload.get("model_error") or "")

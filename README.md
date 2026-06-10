@@ -124,11 +124,13 @@ Check status:
 python -m rethlas.cli status ns/ns
 ```
 
-## Starting The Verification Service
+## Verification Service
 
-The generation agent calls the verification agent over HTTP.
+The generation agent calls the verification agent over HTTP. A normal
+`run` starts the local verifier automatically when it is not already reachable.
 
-Start it from the repository root:
+For debugging, or to keep the verifier running separately, start it from the
+repository root:
 
 ```bash
 python -m rethlas.cli verify-server
@@ -153,6 +155,13 @@ The default verification URL is configured in `rethlas.toml`:
 host = "127.0.0.1"
 port = 8091
 ```
+
+The verifier resolves its model from the env it inherits at startup:
+`RETHLAS_VERIFICATION_MODEL` → `RETHLAS_MODEL` → `runtime.default_model`
+(`gpt-5.5` / Codex CLI). The resolved profile is exposed by `GET /health`,
+and `rethlas run` prints it before starting a problem; if it does not match
+the generation profile the run will emit a warning so a stale, long-lived
+verifier process is visible before it silently runs the wrong model.
 
 ## Custom Model Configuration
 
@@ -271,6 +280,7 @@ The 14 built-in presets are not user-extensible from `.env`. To add a new vendor
 | `<VENDOR>_MODEL` | Real model name (e.g. `DEEPSEEK_MODEL=deepseek-chat`). **Required** to use the preset — no hardcoded defaults. |
 | `RETHLAS_MODEL` | Selects the active preset. Overridden by `--model` on the CLI. |
 | `RETHLAS_VERIFICATION_MODEL` | Selects the preset for the verification agent (defaults to `RETHLAS_MODEL`). |
+| `RETHLAS_THINKING_SUMMARIZER_MODEL` | Selects the model for reasoning-progress summaries (defaults to the main model). Set to empty to disable. |
 | `CODEX_BIN` | Codex CLI binary name (defaults to `codex`). |
 
 `.env.example` lists every supported variable with a reference card (vendor home, API docs, key signup, and example model names).
@@ -298,7 +308,7 @@ Current behavior:
 - Codex generation keeps the original full agent behavior.
 - Verification API now uses the shared runtime layer.
 - LiteLLM verification extracts model JSON, validates it, and writes `verification.json`.
-- LiteLLM generation has a native tool-call loop, writes `blueprint.md`, and performs one verifier pass when the verification service is reachable.
+- LiteLLM generation has a native tool-call loop, starts the local verifier when needed, writes `blueprint.md`, and performs verifier passes until success or exhaustion.
 - Native OpenAI/Anthropic provider kinds are placeholders for future direct API implementations; use `provider = "litellm"` today.
 
 ## Run Control And Progress
@@ -335,6 +345,15 @@ Streaming output: LiteLLM generation supports `stream=True` and emits
 one `model_delta` event per chunk, with a graceful fallback to a single
 message-level call when the provider does not support streaming tools.
 Use `tail --deltas` to see the deltas as they arrive.
+
+Reasoning progress: when using a reasoning model (e.g. DeepSeek reasoner),
+the agent prints a dot (`.`) every 200 chars of internal reasoning to show
+liveness. Every 3000 chars it fires a lightweight background summarizer
+that prints a one-line `Thinking:` summary of what the model is currently
+working on. The summarizer reuses the main model by default; set
+`RETHLAS_THINKING_SUMMARIZER_MODEL` to a cheap fast model (e.g.
+`deepseek-chat`) for lower latency. Set it to empty to disable summarization
+and keep only the dot heartbeat.
 
 Stop semantics for background jobs:
 

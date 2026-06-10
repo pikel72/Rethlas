@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,18 @@ WORK_DIR = REPO_ROOT.resolve()
 RESULTS_ROOT = WORK_DIR / "results"
 
 VERIFICATION_FILENAMES = ("verification.json", "verificationt.json")
+
+
+def _verification_model_name() -> Optional[str]:
+    """Return the model name the verifier should use, honoring
+    ``RETHLAS_VERIFICATION_MODEL`` first so users can pick a different
+    model for verification than for generation. Returns ``None`` to let
+    ``resolve_model`` fall back to ``RETHLAS_MODEL`` and finally to
+    ``runtime.default_model`` in ``rethlas.toml``."""
+    name = os.getenv("RETHLAS_VERIFICATION_MODEL")
+    if name and name.strip():
+        return name.strip()
+    return None
 
 
 class VerifyRequest(BaseModel):
@@ -116,6 +129,7 @@ def run_runtime_verification(run_id: str, statement: str, proof: str) -> Dict[st
         cwd=config.paths.verification_dir,
         prompt=prompt,
         log_path=log_path,
+        model_name=_verification_model_name(),
     )
     plan = build_plan(config, request)
     missing = missing_runtime_dependencies(plan)
@@ -171,9 +185,46 @@ def run_runtime_verification(run_id: str, statement: str, proof: str) -> Dict[st
 app = FastAPI(title="Verification Agent API", version="0.1.0")
 
 
+def _health_model_payload() -> Dict[str, Any]:
+    """Resolve the model the verifier *would* use right now and report it.
+
+    The lookup runs on every ``/health`` call (not cached at startup) so the
+    response always reflects current env. That matches what ``/verify`` will
+    actually use on the next request and lets ``cmd_run`` detect a stale
+    verifier process: if the operator changed ``RETHLAS_MODEL`` in ``.env``
+    after the verifier was started, the inherited-env model still wins, and
+    the mismatch shows up here.
+
+    Any failure (unknown preset, missing API key env) becomes a
+    ``model_error`` string; ``status`` stays ``ok`` so the bare liveness
+    check that ``verifier_health`` does still works.
+    """
+    payload: Dict[str, Any] = {
+        "model_profile": None,
+        "model": None,
+        "provider": None,
+        "provider_kind": None,
+        "model_error": None,
+    }
+    try:
+        config = load_config(PROJECT_ROOT)
+        model = config.resolve_model(_verification_model_name())
+        provider = config.resolve_provider(model)
+    except Exception as exc:  # noqa: BLE001 - we want every failure exposed
+        payload["model_error"] = str(exc)
+        return payload
+    payload["model_profile"] = model.name
+    payload["model"] = model.model
+    payload["provider"] = provider.name
+    payload["provider_kind"] = provider.kind
+    return payload
+
+
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+def health() -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"status": "ok"}
+    payload.update(_health_model_payload())
+    return payload
 
 
 @app.post("/verify")

@@ -5,8 +5,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 from .config import find_repo_root, load_config, load_dotenv_from_repo_root
@@ -44,6 +46,9 @@ from .subagents import SubAgentRunner, SubAgentTask
 from .viewer import build_results_viewer, serve_results_viewer
 
 
+VERIFIER_REQUIRED_MODULES = ("uvicorn", "litellm")
+
+
 def build_generation_prompt(problem_path: str, problem_id: str, reference_prompt: str) -> str:
     return (
         f"Use AGENTS.md exactly to solve the math problem in {problem_path}. "
@@ -58,6 +63,214 @@ def verifier_health(url: str, timeout_seconds: int = 2) -> bool:
             return 200 <= response.status < 300
     except (OSError, urllib.error.URLError):
         return False
+
+
+def verifier_status(url: str, timeout_seconds: int = 2) -> Optional[dict]:
+    """Return the verifier's ``/health`` JSON payload, or ``None`` if the
+    service is unreachable or its response is not JSON.
+
+    Used by ``cmd_run`` to surface the verifier's active model so a stale
+    long-running verifier process (one started with a different
+    ``RETHLAS_MODEL`` than the current shell has) is visible to the operator
+    before it silently runs the wrong model."""
+    try:
+        with urllib.request.urlopen(f"{url}/health", timeout=timeout_seconds) as response:
+            if not (200 <= response.status < 300):
+                return None
+            body = response.read()
+    except (OSError, urllib.error.URLError):
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _print_verifier_banner(url: str, plan, *, status: Optional[dict]) -> None:
+    """Print the verifier reachability line plus the verifier's active model.
+
+    ``status`` is the JSON payload from ``/health`` (call ``verifier_status``
+    once and pass the result here so we don't double-probe the service). When
+    it is ``None`` the verifier is unreachable; we print that and stop.
+
+    When the verifier's ``model_profile`` differs from the plan's, print a
+    soft warning so the operator can choose to restart the verifier with the
+    intended env. Does NOT block the run — the user explicitly chose this
+    behavior to keep CI/scripted use unblocked."""
+    if status is None:
+        print(f"verifier reachable: false")
+        return
+    print(f"verifier reachable: true")
+    profile = status.get("model_profile")
+    model = status.get("model")
+    provider = status.get("provider")
+    model_error = status.get("model_error")
+    if profile:
+        descriptor = f"{provider}/{model}" if provider and model else (model or "<unknown>")
+        print(f"verifier model: {profile} ({descriptor})")
+        plan_profile = getattr(plan, "model_profile", None)
+        if plan_profile and plan_profile != profile:
+            print(
+                "  WARNING: verifier is using "
+                f"{profile!r} but generation will use {plan_profile!r}; "
+                "restart the verifier service after changing RETHLAS_MODEL / "
+                "RETHLAS_VERIFICATION_MODEL to align them."
+            )
+    else:
+        print("verifier model: <unresolved>")
+        if model_error:
+            print(f"  model_error: {model_error}")
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    return venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _verification_venv_python(config) -> Path:
+    return _venv_python(config.paths.verification_dir / ".venv")
+
+
+def _python_can_import_all(python: Path, modules: tuple[str, ...]) -> bool:
+    return all(_python_can_import(python, module) for module in modules)
+
+
+def _ensure_pip(python: Path) -> None:
+    if _python_can_import(python, "pip"):
+        return
+    subprocess.run([str(python), "-m", "ensurepip", "--upgrade"], check=True)
+
+
+def _install_requirements(python: Path, requirements: Path) -> None:
+    _ensure_pip(python)
+    subprocess.run([str(python), "-m", "pip", "install", "-r", str(requirements)], check=True)
+
+
+def _prepare_verification_venv(config) -> Path:
+    venv_dir = config.paths.verification_dir / ".venv"
+    python_exe = _venv_python(venv_dir)
+    if not python_exe.exists():
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+    requirements = config.paths.verification_dir / "requirements.txt"
+    if requirements.is_file():
+        _install_requirements(python_exe, requirements)
+    return python_exe
+
+
+def _verification_python(config, *, auto_setup: bool = False) -> str:
+    python_exe = _verification_venv_python(config)
+    if python_exe.exists() and _python_can_import_all(python_exe, VERIFIER_REQUIRED_MODULES):
+        return str(python_exe)
+    if auto_setup:
+        python_exe = _prepare_verification_venv(config)
+        if _python_can_import_all(python_exe, VERIFIER_REQUIRED_MODULES):
+            return str(python_exe)
+
+    current_python = Path(sys.executable)
+    if _python_can_import_all(current_python, VERIFIER_REQUIRED_MODULES):
+        return sys.executable
+
+    modules = ", ".join(VERIFIER_REQUIRED_MODULES)
+    raise RuntimeError(
+        f"no Python environment can start the verifier; missing import(s): {modules}. "
+        "Run `python -m rethlas.cli setup` or fix agents/verification/.venv."
+    )
+
+
+def _verification_server_command(
+    config,
+    *,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    auto_setup: bool = False,
+) -> list[str]:
+    return [
+        _verification_python(config, auto_setup=auto_setup),
+        "-m",
+        "uvicorn",
+        "api.server:app",
+        "--host",
+        host or config.verification.host,
+        "--port",
+        str(port or config.verification.port),
+    ]
+
+
+def _verification_server_log_paths(config) -> tuple[Path, Path]:
+    log_dir = config.paths.verification_dir / "results" / "server"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "stdout.log", log_dir / "stderr.log"
+
+
+def _start_verifier_background(config, *, timeout_seconds: float = 20.0) -> tuple[bool, str]:
+    if verifier_health(config.verification.base_url):
+        return True, "already reachable"
+
+    stdout_log, stderr_log = _verification_server_log_paths(config)
+    try:
+        cmd = _verification_server_command(config, auto_setup=True)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        return False, f"failed to prepare verifier environment: {exc}"
+    stdout_handle = stdout_log.open("ab", buffering=0)
+    stderr_handle = stderr_log.open("ab", buffering=0)
+    popen_kwargs = {
+        "args": cmd,
+        "cwd": str(config.paths.verification_dir),
+        "stdin": subprocess.DEVNULL,
+        "stdout": stdout_handle,
+        "stderr": stderr_handle,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+        popen_kwargs["close_fds"] = True
+
+    try:
+        process = subprocess.Popen(**popen_kwargs)
+    except OSError as exc:
+        stdout_handle.close()
+        stderr_handle.close()
+        return False, f"failed to start verifier: {exc}"
+    finally:
+        stdout_handle.close()
+        stderr_handle.close()
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if verifier_health(config.verification.base_url):
+            return True, f"started verifier pid={process.pid}"
+        returncode = process.poll()
+        if returncode is not None:
+            return (
+                False,
+                f"verifier exited early with code {returncode}; stderr: {stderr_log}",
+            )
+        time.sleep(0.5)
+
+    return False, f"verifier did not become healthy within {timeout_seconds:g}s; stderr: {stderr_log}"
+
+
+def _ensure_verifier_for_run(config, plan) -> bool:
+    if plan.provider_kind == "mock":
+        return True
+    if verifier_health(config.verification.base_url):
+        return True
+    print("verifier not reachable; starting local verification service...")
+    ok, message = _start_verifier_background(config)
+    print(f"verifier: {message}")
+    if ok:
+        # The banner printed earlier saw the OLD (unreachable) verifier; now
+        # that a fresh one is up, print the model it actually resolved so
+        # mismatch warnings fire BEFORE the run starts spending tokens.
+        _print_verifier_banner(
+            config.verification.base_url,
+            plan,
+            status=verifier_status(config.verification.base_url),
+        )
+    return ok
 
 
 def _print_plan(plan) -> None:
@@ -364,7 +577,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"memory: {problem.memory_dir}")
     print(f"results: {problem.result_dir}")
     print(f"verification url: {config.verification.base_url}")
-    print(f"verifier reachable: {str(verifier_health(config.verification.base_url)).lower()}")
+    _print_verifier_banner(
+        config.verification.base_url,
+        plan,
+        status=verifier_status(config.verification.base_url),
+    )
     _print_plan(plan)
     append_event(
         problem.log_dir,
@@ -382,6 +599,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         append_event(problem.log_dir, "run_dry_run_finished", {"model": plan.model_profile})
         return 0
 
+    if args.role == "generation" and not _ensure_verifier_for_run(config, plan):
+        append_event(
+            problem.log_dir,
+            "run_failed",
+            {"error": "verification service unavailable"},
+        )
+        return 2
+
     if plan.provider_kind != "codex-cli" and args.role == "generation":
         if getattr(args, "json_events", False):
             _enable_json_events_stdout(problem.log_dir)
@@ -395,7 +620,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             or (prior_blueprint.is_file() and prior_blueprint.stat().st_size > 0)
         )
         if _resume:
-            print("note: prior state found — continuing previous work")
+            print("note: prior state found - continuing previous work")
         result = run_native_generation(
             config,
             problem,
@@ -780,7 +1005,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         (config.paths.verification_dir / ".venv", config.paths.verification_dir / "requirements.txt"),
     ]
     for venv_dir, requirements in targets:
-        python_exe = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        python_exe = _venv_python(venv_dir)
         print(f"venv: {venv_dir}")
         if args.dry_run:
             print(f"  would create if missing: {venv_dir}")
@@ -790,28 +1015,23 @@ def cmd_setup(args: argparse.Namespace) -> int:
         if not python_exe.exists():
             subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
         if requirements.is_file():
-            subprocess.run([str(python_exe), "-m", "pip", "install", "-r", str(requirements)], check=True)
+            _install_requirements(python_exe, requirements)
     return 0
 
 
 def cmd_verify_server(args: argparse.Namespace) -> int:
     config = load_config()
     verification_dir = config.paths.verification_dir
-    python_exe = verification_dir / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
-    if python_exe.exists() and _python_can_import(python_exe, "uvicorn") and _python_can_import(python_exe, "litellm"):
-        python = str(python_exe)
-    else:
-        python = sys.executable
-    cmd = [
-        python,
-        "-m",
-        "uvicorn",
-        "api.server:app",
-        "--host",
-        args.host or config.verification.host,
-        "--port",
-        str(args.port or config.verification.port),
-    ]
+    try:
+        cmd = _verification_server_command(
+            config,
+            host=args.host,
+            port=args.port,
+            auto_setup=not args.dry_run,
+        )
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"failed to prepare verifier environment: {exc}")
+        return 2
     print(" ".join(cmd))
     if args.dry_run:
         return 0

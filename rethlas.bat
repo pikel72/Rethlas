@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
@@ -17,19 +17,22 @@ echo  5. Dry-run a problem
 echo  6. Open results page
 echo  0. Exit
 echo.
+set "CHOICE="
 set /p "CHOICE=Choose an option: "
+if errorlevel 1 goto end
+set "CHOICE=!CHOICE: =!"
 
-if "%CHOICE%"=="1" goto doctor
-if "%CHOICE%"=="2" goto verifier
-if "%CHOICE%"=="3" goto run_example
-if "%CHOICE%"=="4" goto run_problem
-if "%CHOICE%"=="5" goto dry_run_problem
-if "%CHOICE%"=="6" goto results_page
-if "%CHOICE%"=="0" goto end
+if "!CHOICE!"=="1" goto doctor
+if "!CHOICE!"=="2" goto verifier
+if "!CHOICE!"=="3" goto run_example
+if "!CHOICE!"=="4" goto run_problem
+if "!CHOICE!"=="5" goto dry_run_problem
+if "!CHOICE!"=="6" goto results_page
+if "!CHOICE!"=="0" goto end
 
 echo.
-echo Unknown option: %CHOICE%
-pause
+echo Unknown option: !CHOICE!
+call :pause_or_continue
 goto menu
 
 :doctor
@@ -46,7 +49,7 @@ python -m rethlas.cli doctor
 echo.
 powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8091/health | Out-Null; 'verifier: reachable at http://127.0.0.1:8091' } catch { 'verifier: not reachable at http://127.0.0.1:8091' }"
 echo.
-pause
+call :pause_or_continue
 goto menu
 
 :verifier
@@ -55,7 +58,7 @@ echo A new PowerShell window will stay open while the service is running.
 echo Close that window or press Ctrl+C there to stop the service.
 echo.
 start "Rethlas verification service" powershell -NoExit -NoProfile -ExecutionPolicy Bypass -File "%ROOT%rethlas.ps1" verify-server
-pause
+call :pause_or_continue
 goto menu
 
 :run_example
@@ -76,31 +79,33 @@ echo The page will be served at http://127.0.0.1:3264
 echo Close the PowerShell window or press Ctrl+C there to stop the page server.
 echo.
 start "Rethlas results" powershell -NoExit -NoProfile -ExecutionPolicy Bypass -File "%ROOT%rethlas.ps1" results-site --open
-pause
+call :pause_or_continue
 goto menu
 
 :run_selected
 call :print_header "Running %PROBLEM%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%rethlas.ps1" run "%PROBLEM%"
 echo.
-pause
+call :pause_or_continue
 goto menu
 
 :dry_run_selected
 call :print_header "Dry run %PROBLEM%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%rethlas.ps1" run "%PROBLEM%" --dry-run
 echo.
-pause
+call :pause_or_continue
 goto menu
 
 :ask_problem
 echo.
 echo Available problems:
 echo ------------------------------------------------------------
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%list_problems.ps1" "%ROOT%agents\generation\data"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$root = Resolve-Path '%ROOT%agents\generation\data'; Get-ChildItem -LiteralPath $root -Recurse -Filter *.md | ForEach-Object { $rel = $_.FullName.Substring($root.Path.Length + 1).Replace('\','/'); if ($rel -notlike '*.refs/*') { $rel -replace '\.md$','' } } | Sort-Object" <nul
 echo.
 echo Enter a problem id or path (e.g. ns/ns, example).
+set "PROBLEM="
 set /p "PROBLEM=Problem: "
+if errorlevel 1 set "PROBLEM=example"
 if "!PROBLEM!"=="" set "PROBLEM=example"
 exit /b 0
 
@@ -128,6 +133,11 @@ if exist "%ROOT%%~1" (
 ) else (
   echo %~2: missing ^(%~1^)
 )
+exit /b 0
+
+:pause_or_continue
+if "%RETHLAS_NO_PAUSE%"=="1" exit /b 0
+pause
 exit /b 0
 
 :end

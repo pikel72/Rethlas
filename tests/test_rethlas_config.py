@@ -102,8 +102,17 @@ def test_load_dotenv_from_repo_root_loads_real_dotenv(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     from rethlas.config import find_repo_root
     repo_root = find_repo_root()
-    # If the user hasn't created a .env yet, this is a no-op. We just verify
-    # the function returns an int and doesn't raise.
-    count = load_dotenv_from_repo_root(repo_root)
-    assert isinstance(count, int)
-    assert count >= 0
+    # Snapshot os.environ so we can roll back any keys load_dotenv mutates.
+    # monkeypatch can't track them — they're set inside the function under
+    # test, not via monkeypatch.setenv. Without this, the real .env values
+    # (RETHLAS_MODEL, RETHLAS_VERIFICATION_MODEL, vendor API keys) leak
+    # into every later test in the session and steer "mock" verification
+    # tests at the real LiteLLM backend.
+    before = dict(os.environ)
+    try:
+        count = load_dotenv_from_repo_root(repo_root)
+        assert isinstance(count, int)
+        assert count >= 0
+    finally:
+        for key in set(os.environ) - set(before):
+            os.environ.pop(key, None)

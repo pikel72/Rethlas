@@ -6,7 +6,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from importlib.util import find_spec
+from importlib import import_module
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -387,8 +387,10 @@ def missing_runtime_dependencies(plan: RuntimePlan) -> List[str]:
         if shutil.which(plan.command[0]) is None:
             missing.append(plan.command[0])
     if plan.provider_kind == "litellm":
-        if find_spec("litellm") is None:
-            missing.append("python package: litellm")
+        try:
+            import_module("litellm")
+        except ImportError as exc:
+            missing.append(f"python package: litellm ({exc})")
     if plan.provider_kind in {"litellm", "openai-compatible", "anthropic-compatible"} and plan.api_key_env:
         if not os.getenv(plan.api_key_env):
             missing.append(plan.api_key_env)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import os
 from pathlib import Path
 import sys
+import threading
 import time
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from .config import RethlasConfig
 from .events import append_event
@@ -13,6 +15,125 @@ from .problems import ProblemPaths
 from .references import ReferencePreparation
 from .runtime import RuntimeRequest, litellm_completion_kwargs
 from .tools import build_generation_tool_registry
+
+
+# Trigger a one-line summary every N chars of accumulated reasoning_content.
+# 3000 chars is roughly 750 tokens of internal reasoning; small enough that
+# the user sees regular progress, large enough that we don't spam the
+# summary API on every chunk.
+THINKING_SUMMARIZER_TRIGGER_CHARS = 3000
+# Send the last N chars of reasoning to the summarizer; the full trace would
+# bloat the summary prompt, and the recent slice is what the model is
+# currently thinking about anyway.
+THINKING_SUMMARIZER_SLICE_CHARS = 2000
+# Cap concurrent in-flight summarizer calls so a long reasoning phase doesn't
+# queue dozens of summary requests against the same provider.
+THINKING_SUMMARIZER_MAX_INFLIGHT = 2
+
+# Lock protecting stream output so that background summarizer results don't
+# interleave with foreground dot / delta output.
+_stream_lock = threading.Lock()
+
+# Track summarizer state across streaming chunks. Mutable so the background
+# thread can decrement _in_flight when it finishes.
+class _SummarizerState:
+    def __init__(self):
+        self.accumulated_chars = 0
+        self.next_trigger_at = THINKING_SUMMARIZER_TRIGGER_CHARS
+        self._in_flight = 0
+
+
+def _summarizer_model_name(request: RuntimeRequest) -> Optional[str]:
+    """Return the model name override for the thinking summarizer.
+
+    Reads ``RETHLAS_THINKING_SUMMARIZER_MODEL`` — set it to a cheap fast
+    model (e.g. ``deepseek-chat``) to keep summary latency low.  Returns
+    ``None`` to reuse the main model from the request.  Set to the empty
+    string to disable summarization entirely.
+    """
+    name = os.getenv("RETHLAS_THINKING_SUMMARIZER_MODEL")
+    if name is None:
+        return None  # not set → reuse main model
+    stripped = name.strip()
+    if not stripped:
+        return None  # empty string → reuse main model
+    return stripped
+
+
+def _summarizer_litellm_kwargs(request: RuntimeRequest) -> dict:
+    """Build LiteLLM kwargs for the summarizer, sharing the same provider /
+    API key / base URL as the main generation request.
+    """
+    kwargs = litellm_completion_kwargs(request)
+    override = _summarizer_model_name(request)
+    if override is not None:
+        kwargs["model"] = override
+    return kwargs
+
+
+def _run_summarizer(kwargs: dict, state: _SummarizerState, reasoning_text: str,
+                    iteration: int, problem_label: str) -> None:
+    """Background summarizer entry point.  Calls LiteLLM in a fresh thread,
+    prints the one-line summary under the stream lock, then decrements the
+    in-flight counter.  On any failure we silently fall back to the dot
+    heartbeat — the user won't see anything extra.
+    """
+    try:
+        import litellm  # noqa: F811 - imported again in the bg thread context
+        prompt = (
+            "Summarize the following reasoning excerpt in ONE short Chinese "
+            "sentence. Say what the model is currently working on: analyzing a "
+            "lemma, searching for a proof strategy, checking an edge case, "
+            "reviewing a prior attempt, etc. Be concrete and brief. Return "
+            "only the sentence, no prefix or label.\n\n"
+            "Reasoning excerpt:\n"
+            f"{reasoning_text[-THINKING_SUMMARIZER_SLICE_CHARS:]}\n"
+        )
+        response = litellm.completion(
+            model=kwargs.pop("model"),
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=128,
+            temperature=0.3,
+            **{k: v for k, v in kwargs.items()
+               if k in ("api_key", "api_base", "timeout")},
+        )
+        summary = (response.choices[0].message.content or "").strip()
+        if summary:
+            with _stream_lock:
+                print(f"\n  [{problem_label} iter {iteration}] Thinking: {summary}")
+                sys.stdout.flush()
+    except Exception:
+        pass  # silent fallback — dots continue normally
+    finally:
+        state._in_flight = max(0, state._in_flight - 1)
+
+
+def _maybe_trigger_summarizer(request: RuntimeRequest, state: _SummarizerState,
+                              reasoning_text_recent: str, iteration: int,
+                              problem_label: str) -> None:
+    """Check whether enough reasoning has accumulated to fire a summarizer
+    call, and launch one in a background thread if so.
+    """
+    state.accumulated_chars += len(reasoning_text_recent)
+    if state.accumulated_chars < state.next_trigger_at:
+        return
+    if state._in_flight >= THINKING_SUMMARIZER_MAX_INFLIGHT:
+        return  # one is still running; don't pile on
+    try:
+        kwargs = _summarizer_litellm_kwargs(request)
+    except Exception:
+        return  # can't resolve model; silent skip
+    state._in_flight += 1
+    state.next_trigger_at = state.accumulated_chars + THINKING_SUMMARIZER_TRIGGER_CHARS
+    # Capture a snapshot of the current accumulated reasoning so the summarizer
+    # sees the right window even if more chunks arrive during the API call.
+    reasoning_snapshot = reasoning_text_recent
+    thread = threading.Thread(
+        target=_run_summarizer,
+        args=(kwargs, state, reasoning_snapshot, iteration, problem_label),
+        daemon=True,
+    )
+    thread.start()
 
 
 @dataclass(frozen=True)
@@ -166,9 +287,9 @@ def run_native_generation(
                 message=f"native generation model call failed: {exc}",
             )
 
-        previous_draft = draft
         if draft.strip():
             draft_path.write_text(draft, encoding="utf-8")
+            previous_draft = draft
         else:
             # A reasoning model can return zero text on a turn (e.g. it burned
             # the token budget on reasoning_content). Don't clobber the
@@ -181,7 +302,7 @@ def run_native_generation(
                 "empty_draft_skipped",
                 {
                     "attempt": attempt,
-                    "finish_reason": finish_reason,
+                    "finish_reason": "unknown",
                     "kept_previous_draft": bool(previous_draft and previous_draft.strip()),
                 },
             )
@@ -190,11 +311,11 @@ def run_native_generation(
                 "verification_report": {
                     "summary": (
                         f"Attempt {attempt} produced an empty draft "
-                        f"(finish_reason={finish_reason}). Try again, ensuring the "
+                        "(finish_reason=unknown). Try again, ensuring the "
                         "final message is real markdown text and not just a tool call."
                     ),
                     "critical_errors": [
-                        f"empty draft on attempt {attempt} (finish_reason={finish_reason})"
+                        f"empty draft on attempt {attempt} (finish_reason=unknown)"
                     ],
                     "gaps": ["no proof text was produced"],
                 },
@@ -460,6 +581,9 @@ def _run_litellm_tool_loop(
             tool_calls: list = []
             finish_reason = None
             reasoning_chars = 0
+            reasoning_text = ""  # accumulated for the summarizer window
+            summarizer_state = _SummarizerState()
+            problem_label = problem.problem_id
             should_stream = use_provider_streaming and request.model.supports_streaming
             if should_stream:
                 try:
@@ -470,9 +594,15 @@ def _run_litellm_tool_loop(
                         reasoning_delta = _extract_stream_reasoning(chunk)
                         if reasoning_delta:
                             reasoning_chars += len(reasoning_delta)
+                            reasoning_text += reasoning_delta
                             if stream and reasoning_chars % 200 == 0:
-                                _stream_text(".", end="")
+                                with _stream_lock:
+                                    _stream_text(".", end="")
                                 reasoning_active = True
+                            _maybe_trigger_summarizer(
+                                request, summarizer_state,
+                                reasoning_text, iteration, problem_label,
+                            )
                         delta = _extract_stream_delta(chunk)
                         if delta:
                             if stream and reasoning_active:
@@ -813,7 +943,43 @@ def _native_generation_prompt(
 
 
 def _native_generation_system_prompt(config: RethlasConfig) -> str:
-    return (config.paths.generation_dir / "AGENTS.md").read_text(encoding="utf-8")
+    return _native_math_system_prompt()
+
+
+def _native_math_system_prompt() -> str:
+    return (
+        "You are the native Rethlas mathematical proof agent.\n\n"
+        "Role split:\n"
+        "- You choose mathematical strategy, inspect available mathematical context, "
+        "record useful proof state, and write complete proof candidates.\n"
+        "- The Python controller writes blueprint.md, calls the verifier after each "
+        "candidate, records verifier reports, and publishes blueprint_verified.md "
+        "only when verification returns correct.\n\n"
+        "Available mathematical tools:\n"
+        "- read_run_context: inspect bounded problem, result, log, and memory state.\n"
+        "- list_problem_references: list user-provided reference files for the problem.\n"
+        "- read_problem_reference: read bounded text from a problem reference file.\n"
+        "- search_math_results: search for mathematical definitions, lemmas, "
+        "theorems, counterexamples, and repair evidence.\n"
+        "- fetch_math_source: inspect focused cached or fetched source context before "
+        "relying on an external result.\n"
+        "- record_math_note: persist conclusions, source notes, subgoals, proof steps, "
+        "failed paths, decisions, and verification reports.\n"
+        "- search_memory: retrieve compact prior mathematical notes.\n"
+        "- memory_init, memory_append, memory_search, branch_update: lower-level "
+        "compatibility tools; prefer the math-specific tools above when possible.\n\n"
+        "Working rules:\n"
+        "1. Use the problem statement in the user prompt as authoritative.\n"
+        "2. For resumed or repair attempts, call read_run_context when prior state "
+        "could affect the next proof.\n"
+        "3. Use local references before external literature when they are relevant.\n"
+        "4. Before citing or relying on external literature, use search_math_results "
+        "and then fetch_math_source to inspect assumptions and local definitions.\n"
+        "5. Store durable mathematical state with record_math_note.\n"
+        "6. When ready, return only the complete markdown proof candidate for "
+        "blueprint.md. Do not return diffs, commentary, tool transcripts, or JSON.\n"
+        "7. Do not claim verification success; the controller/verifier decides that."
+    )
 
 
 def _native_generation_user_prompt(
@@ -837,7 +1003,13 @@ def _native_generation_user_prompt(
         f"Problem id: {problem.problem_id}\n"
         f"Problem file: {problem.problem_path}\n"
         f"Reference policy: {refs.prompt_suffix}\n\n"
-        "Use the available tools for memory and verification. "
+        "Use the available tools for mathematical context and memory. "
+        "Use read_run_context when resuming or repairing prior work. "
+        "Use list_problem_references and read_problem_reference when local "
+        "reference excerpts are insufficient. Use search_math_results for "
+        "external mathematical facts, fetch_math_source before relying on a "
+        "retrieved source, and record_math_note/search_memory for durable "
+        "mathematical state. "
         "When you have a candidate proof blueprint, return only markdown for blueprint.md.\n"
         f"{_latex_output_policy()}\n\n"
         "Problem statement:\n"
@@ -870,7 +1042,9 @@ def _native_generation_repair_prompt(
         "then gaps, then address repair_hints. If the report requires a "
         "strategy change, revise the proof globally rather than making a local "
         "patch. Return a complete replacement markdown proof for blueprint.md, "
-        "not a diff and not commentary about the changes.\n"
+        "not a diff and not commentary about the changes. Use read_run_context "
+        "if prior run state or memory is needed, search_memory for prior "
+        "mathematical notes, and record_math_note for durable repair decisions.\n"
         f"{_latex_output_policy()}\n\n"
         "Problem statement:\n"
         f"{problem_text}\n\n"

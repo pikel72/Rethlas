@@ -95,14 +95,13 @@ goto menu
 
 :ask_problem
 echo.
-echo Enter a problem id or path.
-echo Examples:
-echo   example
-echo   ns/ns
-echo   data/modrep/modrep.md
+echo Available problems:
+echo ------------------------------------------------------------
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%list_problems.ps1" "%ROOT%agents\generation\data"
 echo.
+echo Enter a problem id or path (e.g. ns/ns, example).
 set /p "PROBLEM=Problem: "
-if "%PROBLEM%"=="" set "PROBLEM=example"
+if "!PROBLEM!"=="" set "PROBLEM=example"
 exit /b 0
 
 :print_header

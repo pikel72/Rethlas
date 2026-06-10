@@ -167,7 +167,55 @@ def run_native_generation(
             )
 
         previous_draft = draft
-        draft_path.write_text(draft, encoding="utf-8")
+        if draft.strip():
+            draft_path.write_text(draft, encoding="utf-8")
+        else:
+            # A reasoning model can return zero text on a turn (e.g. it burned
+            # the token budget on reasoning_content). Don't clobber the
+            # previous good draft on disk; record the empty result as a
+            # failed attempt so the next attempt can read the event log,
+            # see what happened, and try again. We keep going through the
+            # attempt loop so the agent can inspect all prior state.
+            append_event(
+                problem.log_dir,
+                "empty_draft_skipped",
+                {
+                    "attempt": attempt,
+                    "finish_reason": finish_reason,
+                    "kept_previous_draft": bool(previous_draft and previous_draft.strip()),
+                },
+            )
+            previous_verification = {
+                "verdict": None,
+                "verification_report": {
+                    "summary": (
+                        f"Attempt {attempt} produced an empty draft "
+                        f"(finish_reason={finish_reason}). Try again, ensuring the "
+                        "final message is real markdown text and not just a tool call."
+                    ),
+                    "critical_errors": [
+                        f"empty draft on attempt {attempt} (finish_reason={finish_reason})"
+                    ],
+                    "gaps": ["no proof text was produced"],
+                },
+                "repair_hints": (
+                    "The previous attempt returned an empty response. Use the "
+                    "search_arxiv_theorems and memory tools to look up references, "
+                    "then write a complete blueprint in your final message — do not "
+                    "end the turn with a tool call."
+                ),
+            }
+            append_event(
+                problem.log_dir,
+                "native_attempt_failed",
+                {
+                    "attempt": attempt,
+                    "verdict": None,
+                    "reason": "empty_draft",
+                    "remaining_attempts": attempts - attempt,
+                },
+            )
+            continue
         append_event(
             problem.log_dir,
             "candidate_written",
